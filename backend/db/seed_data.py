@@ -144,6 +144,24 @@ def seed():
                 "Your next EMI is due in 12 days. Thank you for your continued trust in the bank."
             )
         ),
+        Customer(
+            customer_id="CUST007",
+            customer_name="Prabhat Kumar",
+            mobile_number="+919958270536",
+            email_id="prabhatkumar.tech20@gmail.com",
+            preferred_language="English",
+            preferred_channel="Email",
+            credit_score=720,
+            monthly_income=65000.0,
+            password="password123",
+            relationship_assessment=(
+                "You are a valued customer with a good repayment track record. "
+                "Your EMI payments have been largely consistent. "
+                "One of your loans has a minor overdue of 7 days. "
+                "We encourage timely payment to maintain your excellent credit standing. "
+                "Please reach out if you need any assistance."
+            )
+        ),
     ]
     db.add_all(customers)
     db.flush()
@@ -158,6 +176,7 @@ def seed():
         CustomerPreference(customer_id="CUST004", preferred_channel="Voice Call",preferred_language="Tamil"),
         CustomerPreference(customer_id="CUST005", preferred_channel="Email",     preferred_language="English"),
         CustomerPreference(customer_id="CUST006", preferred_channel="WhatsApp",  preferred_language="Hindi"),
+        CustomerPreference(customer_id="CUST007", preferred_channel="Email",     preferred_language="English"),
     ]
     db.add_all(preferences)
 
@@ -221,6 +240,22 @@ def seed():
             risk_segment="Medium", self_cure_probability=0.60,
             recommended_channel="WhatsApp"
         ),
+        Loan(
+            loan_id="LOAN009", customer_id="CUST007",
+            loan_type="Personal Loan", loan_amount=250000.0, interest_rate=13.5,
+            emi_amount=5800.0, emi_due_date="2026-03-25",
+            outstanding_balance=180000.0, days_past_due=7,
+            risk_segment="Medium", self_cure_probability=0.65,
+            recommended_channel="Email"
+        ),
+        Loan(
+            loan_id="LOAN010", customer_id="CUST007",
+            loan_type="Car Loan", loan_amount=700000.0, interest_rate=9.75,
+            emi_amount=14500.0, emi_due_date="2026-04-01",
+            outstanding_balance=520000.0, days_past_due=0,
+            risk_segment="Low", self_cure_probability=0.88,
+            recommended_channel="Email"
+        ),
     ]
     db.add_all(loans)
     db.flush()
@@ -266,6 +301,16 @@ def seed():
         PaymentHistory(loan_id="LOAN006", payment_date="2026-01-05", payment_amount=35000.0, payment_method="NEFT"),
         PaymentHistory(loan_id="LOAN006", payment_date="2025-12-05", payment_amount=35000.0, payment_method="NEFT"),
         PaymentHistory(loan_id="LOAN006", payment_date="2025-11-05", payment_amount=35000.0, payment_method="NEFT"),
+
+        # LOAN009 - Prabhat Kumar Personal Loan (minor overdue)
+        PaymentHistory(loan_id="LOAN009", payment_date="2026-02-25", payment_amount=5800.0,  payment_method="UPI"),
+        PaymentHistory(loan_id="LOAN009", payment_date="2026-01-24", payment_amount=5800.0,  payment_method="UPI"),
+        PaymentHistory(loan_id="LOAN009", payment_date="2025-12-26", payment_amount=5800.0,  payment_method="Bank Transfer"),
+
+        # LOAN010 - Prabhat Kumar Car Loan (on time)
+        PaymentHistory(loan_id="LOAN010", payment_date="2026-03-01", payment_amount=14500.0, payment_method="NEFT"),
+        PaymentHistory(loan_id="LOAN010", payment_date="2026-02-01", payment_amount=14500.0, payment_method="NEFT"),
+        PaymentHistory(loan_id="LOAN010", payment_date="2026-01-02", payment_amount=14500.0, payment_method="NEFT"),
     ]
     db.add_all(payments)
 

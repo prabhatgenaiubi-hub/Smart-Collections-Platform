@@ -16,8 +16,9 @@ export default function OfficerLayout() {
     { to: '/officer/search',      label: '🔍 Customer Search' },
     { to: '/officer/grace',       label: '⏱ Grace Requests' },
     { to: '/officer/restructure', label: '🔄 Restructure Requests' },
-    { to: '/officer/sentiment',   label: '🧠 Sentiment Analysis' },
-    { to: '/officer/chat',        label: '💬 AI Chat Assistant' },
+    { to: '/officer/sentiment',        label: '🧠 Sentiment Analysis' },
+    { to: '/officer/chat',             label: '💬 AI Chat Assistant' },
+    { to: '/officer/digital-outreach', label: '📡 Digital Outreach' },
   ];
 
   return (
