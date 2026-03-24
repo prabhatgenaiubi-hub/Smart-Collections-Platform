@@ -277,7 +277,7 @@ export default function DigitalOutreach() {
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Search by name, ID or phone…"
+                placeholder="Search by customer name or ID…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSearch()}

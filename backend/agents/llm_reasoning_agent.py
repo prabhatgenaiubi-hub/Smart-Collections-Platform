@@ -20,7 +20,7 @@ import json
 # ─────────────────────────────────────────────
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL    = "llama3"
+OLLAMA_MODEL    = "llama3.1:8b"
 OLLAMA_TIMEOUT  = 120  # seconds
 
 
@@ -80,7 +80,7 @@ def call_ollama(prompt: str, system_prompt: str = "") -> str:
 # Build Context String for Prompts
 # ─────────────────────────────────────────────
 
-def build_context_string(context: dict) -> str:
+def build_context_string(context: dict, include_interactions: bool = True) -> str:
     """
     Convert the context dict into a readable string for LLM prompts.
     """
@@ -115,14 +115,14 @@ def build_context_string(context: dict) -> str:
         for p in payments[:3]:
             lines.append(f"  - {p.get('payment_date')}: ₹{p.get('payment_amount', 0):,.0f} via {p.get('payment_method')}")
 
-    # Interaction summaries
-    if interactions:
+    # Interaction summaries — only include if explicitly requested
+    if include_interactions and interactions:
         lines.append("\nRecent Interactions:")
         for i in interactions[:3]:
             lines.append(f"  - [{i.get('interaction_type')}] {i.get('interaction_summary', '')}")
 
-    # Vector memories
-    if memories:
+    # Vector memories — only include if explicitly requested
+    if include_interactions and memories:
         lines.append("\nSemantic Memory:")
         for m in memories:
             lines.append(f"  - {m}")
@@ -278,47 +278,93 @@ Write a warm, supportive 3-4 sentence assessment.
 def answer_customer_query(
     user_message: str,
     context: dict,
-    chat_history: list
+    chat_history: list,
+    is_officer: bool = False
 ) -> str:
     """
-    Answer a customer's query using LLM with full context.
-    Used by the Customer AI Assistant chat interface.
+    Answer a customer's (or officer's) query using LLM with full context.
+    Used by the Customer AI Assistant chat interface and Officer Loan Chat.
 
     Args:
-        user_message: Current customer message
+        user_message: Current message
         context:      Full customer context dict
         chat_history: List of {role, message_text} dicts
+        is_officer:   If True, respond as if addressing a bank officer (third-person customer refs)
 
     Returns:
         AI assistant response string
     """
-    context_str = build_context_string(context)
-
-    # Build conversation history string
+    # Build conversation history string (only current session messages)
     history_lines = []
     for msg in chat_history[-6:]:  # Last 6 messages for context window
         role = "Customer" if msg.get("role") == "user" else "Assistant"
         history_lines.append(f"{role}: {msg.get('message_text', '')}")
     history_str = "\n".join(history_lines)
 
-    system_prompt = (
-        "You are a helpful, empathetic AI assistant for a bank's collections platform. "
-        "You help customers understand their loan details, EMI schedules, grace periods, "
-        "and restructuring options. Always be polite, clear, and supportive. "
-        "Never provide specific legal advice. Keep responses concise (2-4 sentences). "
-        "Use ₹ for Indian Rupee amounts."
-    )
+    profile = context.get("customer_profile", {})
+    customer_name = profile.get("customer_name", "the customer")
 
-    prompt = f"""
-Customer Profile & Loan Context:
+    # If this is a new session (no prior messages), omit old interaction/vector history
+    # to prevent the LLM from "recalling" content from previous sessions
+    is_new_session = len(chat_history) == 0
+    context_str = build_context_string(context, include_interactions=not is_new_session)
+
+    if is_officer:
+        system_prompt = (
+            "You are an AI collections intelligence assistant for a BANK OFFICER. "
+            "You are helping the officer analyze and manage a specific customer's loan account. "
+            "Always refer to the customer in the THIRD PERSON (e.g., 'The customer', "
+            f"'{customer_name}', 'they'). "
+            "NEVER address the customer directly. NEVER say 'Hello' to the customer. "
+            "Provide factual, analytical, and actionable information for the officer. "
+            "Be concise (2-4 sentences). Use ₹ for Indian Rupee amounts. "
+            "Focus on collections strategy, risk, payment behavior, and loan status."
+        )
+
+        prompt = f"""
+Customer Account Context (for officer review):
 {context_str}
 
 Recent Conversation:
-{history_str}
+{history_str if history_str else "(No prior messages in this session)"}
 
-Customer: {user_message}
+Officer Query: {user_message}
 
-Respond helpfully as the bank's AI assistant.
+Respond as a bank collections AI assistant addressing the OFFICER. Refer to the customer in third person.
+"""
+    else:
+        system_prompt = (
+            "You are a concise AI assistant for a bank's loan collections platform. "
+            "Rules you MUST follow:\n"
+            "1. Give SHORT, DIRECT answers — 1 to 2 sentences maximum.\n"
+            "2. NEVER greet the customer by name (no 'Hello Rahul!' etc.) except on the very first message of a session.\n"
+            "3. NEVER say things like 'as we discussed', 'you already know', 'we've discussed previously'.\n"
+            "4. NEVER add unsolicited suggestions (e.g., 'Would you like to discuss a restructuring plan?') unless the customer asks.\n"
+            "5. Answer ONLY the question asked — nothing more.\n"
+            "6. Use ₹ for Indian Rupee amounts.\n"
+            "7. Answer ONLY from the customer profile and loan context provided below.\n"
+            "8. Do NOT fabricate or assume any information not present in the context."
+        )
+
+        is_first_message = len(chat_history) == 0
+        greeting_note = (
+            "This is the customer's first message — you may greet them briefly by first name."
+            if is_first_message
+            else "This is NOT the first message — do NOT greet or address by name."
+        )
+
+        prompt = f"""
+Customer Profile & Loan Context:
+{context_str}
+
+Current Session Conversation:
+{history_str if history_str else "(No prior messages)"}
+
+Note: {greeting_note}
+
+Customer asks: {user_message}
+
+Answer in 1-2 sentences only. Be direct and factual.
 """
 
     llm_response = call_ollama(prompt, system_prompt)
@@ -329,8 +375,6 @@ Respond helpfully as the bank's AI assistant.
     # ── Fallback: Rule-based responses ────────────────────────────
     msg_lower = user_message.lower()
     loans     = context.get("loans", [])
-    profile   = context.get("customer_profile", {})
-    name      = profile.get("customer_name", "").split()[0] if profile.get("customer_name") else ""
 
     if any(kw in msg_lower for kw in ["loan id", "loan number", "my loan", "which loan", "give my loan", "what is my loan", "tell me my loan", "loan detail"]):
         if loans:
@@ -338,74 +382,50 @@ Respond helpfully as the bank's AI assistant.
                 f"• {l.get('loan_id')} ({l.get('loan_type')}) — ₹{l.get('outstanding_balance', 0):,.0f} outstanding"
                 for l in loans
             )
-            return f"Here are your active loans{', ' + name if name else ''}:\n{loan_lines}"
+            return f"Your active loans:\n{loan_lines}"
         return "You currently have no active loans on file."
 
     if any(kw in msg_lower for kw in ["emi", "payment", "due", "next"]):
         if loans:
             loan = loans[0]
             return (
-                f"Your next EMI of ₹{loan.get('emi_amount', 0):,.0f} is due on "
-                f"{loan.get('emi_due_date', 'N/A')} for loan {loan.get('loan_id')}. "
-                f"Your outstanding balance is ₹{loan.get('outstanding_balance', 0):,.0f}."
+                f"{loan.get('loan_id')} EMI: ₹{loan.get('emi_amount', 0):,.0f} due {loan.get('emi_due_date', 'N/A')}. "
+                f"Outstanding: ₹{loan.get('outstanding_balance', 0):,.0f}."
             )
 
     if any(kw in msg_lower for kw in ["grace", "extension", "delay"]):
         if loans:
             dpd = loans[0].get("days_past_due", 0)
             if dpd < 30:
-                return (
-                    "Based on your account status, you may be eligible for a grace period of up to 7 days. "
-                    "You can submit a grace request from the 'Your Loans' section. "
-                    "A bank officer will review and respond within 1-2 business days."
-                )
-            else:
-                return (
-                    "Your current overdue period exceeds the grace period eligibility threshold. "
-                    "Please contact the bank directly to discuss restructuring options. "
-                    "We are here to help find the best solution for you."
-                )
+                return "You may be eligible for a grace period of up to 7 days. Submit a request from 'Your Loans'."
+            return "Your overdue period may affect grace eligibility. Please contact the bank to discuss options."
 
     if any(kw in msg_lower for kw in ["restructur", "restructure"]):
-        return (
-            "Loan restructuring options include extending your loan tenure or adjusting your EMI amount. "
-            "You can submit a restructure request from the 'Your Loans' section. "
-            "A bank officer will review your request within 2 business days."
-        )
+        return "Loan restructuring is available — submit a request from 'Your Loans' and an officer will review within 2 business days."
 
     if any(kw in msg_lower for kw in ["balance", "outstanding"]):
         if loans:
             loan = loans[0]
-            return (
-                f"Your current outstanding balance for loan {loan.get('loan_id')} is "
-                f"₹{loan.get('outstanding_balance', 0):,.0f}."
-            )
+            return f"Outstanding balance for {loan.get('loan_id')}: ₹{loan.get('outstanding_balance', 0):,.0f}."
 
     if any(kw in msg_lower for kw in ["hello", "hi", "hey"]):
+        profile = context.get("customer_profile", {})
+        first_name = profile.get("customer_name", "").split()[0] if profile.get("customer_name") else ""
         return (
-            f"Hello{', ' + name if name else ''}! I'm your AI banking assistant. "
-            "I can help you with EMI schedules, outstanding balances, loan IDs, "
-            "grace period requests, and loan restructuring options. "
-            "What would you like to know?"
+            f"Hello{', ' + first_name if first_name else ''}! "
+            "What would you like to know about your loan today?"
         )
 
-    # Generic fallback — at minimum, provide loan context
+    # Generic fallback
     if loans:
         loan = loans[0]
         return (
-            f"I can help you with details about your loan{', ' + name if name else ''}. "
-            f"Your primary loan is {loan.get('loan_id')} ({loan.get('loan_type')}) "
-            f"with an outstanding balance of ₹{loan.get('outstanding_balance', 0):,.0f} "
-            f"and EMI of ₹{loan.get('emi_amount', 0):,.0f} due on {loan.get('emi_due_date', 'N/A')}. "
-            "Feel free to ask about EMIs, grace periods, or restructuring options."
+            f"{loan.get('loan_id')} ({loan.get('loan_type')}): "
+            f"₹{loan.get('outstanding_balance', 0):,.0f} outstanding, "
+            f"EMI ₹{loan.get('emi_amount', 0):,.0f} due {loan.get('emi_due_date', 'N/A')}."
         )
 
-    return (
-        f"Thank you for your query{', ' + name if name else ''}. "
-        "I can help you with information about your EMI schedule, outstanding balance, "
-        "grace period eligibility, and loan restructuring options. "
-        "Please feel free to ask any specific question about your loan."
-    )
+    return "How can I help you? Ask me about your loan, EMI, balance, or payment history."
 
 
 # ─────────────────────────────────────────────
@@ -477,10 +497,12 @@ def run_llm_reasoning_agent(state: dict) -> dict:
     # Generate chat response if user query provided
     llm_response = ""
     if user_query:
+        is_officer = state.get("is_officer", False)
         llm_response = answer_customer_query(
             user_message = user_query,
             context      = context,
             chat_history = recent_messages,
+            is_officer   = is_officer,
         )
 
     state.update({

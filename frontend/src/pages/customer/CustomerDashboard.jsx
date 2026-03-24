@@ -53,21 +53,18 @@ export default function CustomerDashboard() {
       {/* Quick Actions */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <QuickAction
-          icon="📋"
           title="View Your Loans"
           desc="Check outstanding balance, EMI schedule and payment history"
           href="/customer/loans"
           color="blue"
         />
         <QuickAction
-          icon="💬"
           title="Loan AI Chat"
-          desc="Go to Your Loans and tap 💬 Chat on any loan to ask AI questions about it"
+          desc="Go to Your Loans and tap Chat on any loan to ask AI questions about it"
           href="/customer/loans"
           color="purple"
         />
         <QuickAction
-          icon="📡"
           title="Communication Preference"
           desc="Set your preferred channel for bank communications"
           href="/customer/preferences"
@@ -87,20 +84,39 @@ function StatCard({ label, value }) {
   );
 }
 
-function QuickAction({ icon, title, desc, href, color }) {
-  const colors = {
-    blue:   'border-blue-200 hover:border-blue-400 hover:bg-blue-50',
-    purple: 'border-purple-200 hover:border-purple-400 hover:bg-purple-50',
-    green:  'border-green-200 hover:border-green-400 hover:bg-green-50',
+function QuickAction({ title, desc, href, color }) {
+  const styles = {
+    blue: {
+      bar:   'bg-blue-500',
+      title: 'text-blue-700',
+      card:  'border-blue-100 hover:border-blue-400 hover:bg-blue-50',
+      tag:   'bg-blue-100 text-blue-600',
+    },
+    purple: {
+      bar:   'bg-purple-500',
+      title: 'text-purple-700',
+      card:  'border-purple-100 hover:border-purple-400 hover:bg-purple-50',
+      tag:   'bg-purple-100 text-purple-600',
+    },
+    green: {
+      bar:   'bg-green-500',
+      title: 'text-green-700',
+      card:  'border-green-100 hover:border-green-400 hover:bg-green-50',
+      tag:   'bg-green-100 text-green-600',
+    },
   };
+  const s = styles[color];
   return (
     <a
       href={href}
-      className={`block bg-white rounded-2xl shadow p-5 border-2 transition-all cursor-pointer ${colors[color]}`}
+      className={`block bg-white rounded-2xl shadow p-5 border-2 transition-all cursor-pointer ${s.card}`}
     >
-      <div className="text-3xl mb-3">{icon}</div>
-      <h3 className="font-semibold text-gray-800 mb-1">{title}</h3>
-      <p className="text-gray-500 text-xs">{desc}</p>
+      <div className={`h-1 w-12 rounded-full mb-4 ${s.bar}`} />
+      <h3 className={`font-bold text-base mb-1 ${s.title}`}>{title}</h3>
+      <p className="text-gray-500 text-xs leading-relaxed">{desc}</p>
+      <span className={`inline-block mt-3 text-xs font-semibold px-2 py-0.5 rounded-full ${s.tag}`}>
+        Go →
+      </span>
     </a>
   );
 }

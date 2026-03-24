@@ -38,6 +38,7 @@ class WorkflowState(TypedDict, total=False):
     session_id:           str
     user_query:           str
     mode:                 str        # "analysis" | "chat"
+    is_officer:           bool       # True when called from officer chat
 
     # ── Customer Profile ──────────────────────
     customer_profile:     dict
@@ -231,13 +232,15 @@ def run_chat_response(
     customer_id: str,
     session_id: str,
     user_query: str,
-    loan_id: str = None
+    loan_id: str = None,
+    is_officer: bool = False
 ) -> dict:
     """
     Run the chat workflow to generate an AI assistant response.
 
     Used by:
         - Customer AI Assistant chat endpoint
+        - Officer Loan-wise Chat endpoint
 
     Returns:
         Final workflow state with llm_response populated
@@ -249,6 +252,7 @@ def run_chat_response(
         "session_id":  session_id,
         "user_query":  user_query,
         "mode":        "chat",
+        "is_officer":  is_officer,
     }
 
     try:

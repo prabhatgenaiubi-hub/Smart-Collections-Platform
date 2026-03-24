@@ -29,6 +29,9 @@ export default function OfficerChat() {
     `Should I approve a grace request for ${id}?`,
     `What is the sentiment trend for customer of ${id}?`,
     `What outreach channel should I use for ${id}?`,
+    `Show payment history for ${id}`,
+    `What is the next EMI due date for ${id}?`,
+    `What is the payment behaviour for ${id}?`,
   ];
 
   useEffect(() => {
