@@ -15,6 +15,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
+# Load .env file so os.getenv() picks up credentials in all modules
+from dotenv import load_dotenv
+load_dotenv()
+
 from backend.db.database import engine, Base
 from backend.db.seed_data import seed
 
@@ -25,6 +29,7 @@ from backend.routers.restructure import router as restructure_router
 from backend.routers.chat        import router as chat_router
 from backend.routers.preferences import router as preferences_router
 from backend.routers.officer     import router as officer_router
+from backend.routers.outreach    import router as outreach_router   # ← Digital Outreach Agent
 
 
 # ─────────────────────────────────────────────
@@ -111,6 +116,7 @@ app.include_router(restructure_router)
 app.include_router(chat_router)
 app.include_router(preferences_router)
 app.include_router(officer_router)
+app.include_router(outreach_router)          # ← Digital Outreach Agent
 
 
 # ─────────────────────────────────────────────

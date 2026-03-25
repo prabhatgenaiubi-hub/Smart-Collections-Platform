@@ -20,7 +20,7 @@ from typing import Optional
 import threading
 
 from backend.db.database import get_db
-from backend.db.models import ChatSession, ChatMessage, Customer, Loan
+from backend.db.models import ChatSession, ChatMessage, Customer, Loan, PaymentHistory
 from backend.routers.auth import get_current_customer
 from backend.langgraph.workflow import run_chat_response
 
@@ -253,23 +253,58 @@ def send_message(
     db.add(user_msg)
     db.commit()
 
-    # ── Run LangGraph chat workflow ───────────────────────────────
-    try:
-        result = run_chat_response(
-            db          = db,
-            customer_id = customer_id,
-            session_id  = session_id,
-            user_query  = body.message.strip(),
-            loan_id     = body.loan_id,
-        )
-        ai_response = result.get("llm_response", "")
-    except Exception as e:
-        print(f"[ChatRouter] Workflow error: {e}")
-        ai_response = ""
+    # ── Greeting intercept — bypass LLM for hi/hello ──────────────
+    _msg_stripped = body.message.strip().lower()
+    _GREET_EXACT  = {"hi", "hello", "hey", "hii", "helo", "helo!", "hi!", "hello!", "hey!",
+                     "good morning", "good afternoon", "good evening"}
+    _is_greeting  = (_msg_stripped in _GREET_EXACT or
+                     any(_msg_stripped.startswith(g + " ") for g in ("hi", "hello", "hey")))
 
-    # ── Fallback response if workflow fails ───────────────────────
-    if not ai_response:
-        ai_response = _fallback_response(body.message, db, customer_id, session_id)
+    if _is_greeting:
+        customer  = db.query(Customer).filter(Customer.customer_id == customer_id).first()
+        cust_name = customer.customer_name if customer else ""
+        # Detect loan-wise session (title like "Loan LOAN005 – Business Loan")
+        import re as _re_greet
+        _loan_match = _re_greet.match(r'Loan\s+(\w+)\s+[–-]\s+(.+)', session.session_title or "")
+        if _loan_match:
+            loan_id_str  = _loan_match.group(1)
+            loan_type_str = _loan_match.group(2)
+            ai_response = (
+                f"Hello, {cust_name}! I'm your AI banking assistant for "
+                f"{loan_id_str} ({loan_type_str}). I can help you with:\n"
+                f"• EMI payment information\n"
+                f"• Outstanding balance queries\n"
+                f"• Grace period eligibility\n"
+                f"• Loan restructuring options\n\n"
+                "How can I assist you today?"
+            )
+        else:
+            ai_response = (
+                f"Hello, {cust_name}! I'm your AI banking assistant. I can help you with:\n"
+                "• EMI payment information\n"
+                "• Outstanding balance queries\n"
+                "• Grace period eligibility\n"
+                "• Loan restructuring options\n\n"
+                "How can I assist you today?"
+            )
+    else:
+        # ── Run LangGraph chat workflow ───────────────────────────
+        ai_response = ""
+        try:
+            result = run_chat_response(
+                db          = db,
+                customer_id = customer_id,
+                session_id  = session_id,
+                user_query  = body.message.strip(),
+                loan_id     = body.loan_id,
+            )
+            ai_response = result.get("llm_response", "")
+        except Exception as e:
+            print(f"[ChatRouter] Workflow error: {e}")
+
+        # ── Fallback response if workflow fails ───────────────────
+        if not ai_response:
+            ai_response = _fallback_response(body.message, db, customer_id, session_id)
 
     # ── Save assistant response ───────────────────────────────────
     assistant_msg = ChatMessage(
@@ -487,32 +522,111 @@ def _fallback_response(
     """
     Rule-based fallback when LangGraph/Ollama workflow is unavailable.
 
-    Handles:
-      1. Emotional / abusive messages  → empathy response
-      2. History / previous questions  → list user messages from this session
-      3. Loan ID queries               → list active loans
-      4. EMI / payment queries         → next EMI details
-      5. Grace period queries          → eligibility check
-      6. Restructuring queries         → how to apply
-      7. Balance queries               → total outstanding
-      8. Greetings                     → friendly intro
-      9. Everything else               → contextual help prompt (not a canned loan dump)
+    Key behaviours:
+      - If the session was opened from a loan page (title contains "Loan LOANXXX"),
+        ALL answers are scoped to that single loan only.
+      - Payment history check runs BEFORE the session-history check to avoid
+        keyword clashes ("previous", "history").
+      - Multi-loan follow-up: customer can say "what about LOAN010" mid-chat.
     """
     msg   = user_message.strip().lower()
     loans = db.query(Loan).filter(Loan.customer_id == customer_id).all()
     customer = db.query(Customer).filter(Customer.customer_id == customer_id).first()
     name = customer.customer_name.split()[0] if customer and customer.customer_name else ""
 
-    # ── 1. Emotional / abusive ─────────────────────────────────────
+    # ── Determine active loan context ─────────────────────────────
+    # Priority 1: session locked to a loan (opened from Loan page)
+    # Priority 2: loan ID explicitly mentioned in this message
+    # Priority 3: first/only loan
+    session_loan_id = None
+    if session_id:
+        session = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+        if session and session.session_title:
+            import re as _re
+            m = _re.search(r'Loan\s+(LOAN\w+)', session.session_title, _re.IGNORECASE)
+            if m:
+                session_loan_id = m.group(1).upper()
+
+    # Check if user mentions a specific loan ID in this message
+    import re as _re
+    mentioned_loan_id = None
+    lm = _re.search(r'\b(LOAN\w+)\b', user_message, _re.IGNORECASE)
+    if lm:
+        mentioned_loan_id = lm.group(1).upper()
+
+    # Resolve which loan to use for this response
+    if session_loan_id:
+        # Session is locked — only answer for this loan
+        active_loans = [l for l in loans if l.loan_id == session_loan_id]
+        if not active_loans:
+            active_loans = loans  # safety fallback
+        is_locked = True
+    elif mentioned_loan_id:
+        active_loans = [l for l in loans if l.loan_id == mentioned_loan_id]
+        if not active_loans:
+            active_loans = loans
+        is_locked = False
+    else:
+        active_loans = loans
+        is_locked = False
+
+    primary_loan = active_loans[0] if active_loans else None
+
+    # ── 1. Emotional / abusive ────────────────────────────────────
     if any(kw in msg for kw in _EMOTIONAL_KEYWORDS):
         return (
-            f"I'm sorry to hear you're feeling this way{', ' + name if name else ''}. "
-            "Your concerns are important to us and I genuinely want to help. "
-            "Could you share what's troubling you about your loan or account? "
-            "I'm here to listen and find the best solution for you."
+            "I'm sorry to hear you're going through a difficult time. "
+            "Please let me know what's concerning you — I'm here to help."
         )
 
-    # ── 2. History / previous questions ───────────────────────────
+    # ── 2. Payment history — BEFORE session-history to avoid clash ──
+    if any(kw in msg for kw in ["payment history", "previous payment", "past payment",
+                                  "payment record", "show payment", "repayment",
+                                  "show my payment", "my payment"]):
+        if not primary_loan:
+            return "I don't see any active loans on your account."
+        payments = (
+            db.query(PaymentHistory)
+            .filter(PaymentHistory.loan_id == primary_loan.loan_id)
+            .order_by(PaymentHistory.payment_date.desc())
+            .limit(6)
+            .all()
+        )
+        if not payments:
+            return f"No payment records found for {primary_loan.loan_id}."
+        lines = "\n".join(
+            f"  {i+1}. {p.payment_date}  —  ₹{p.payment_amount:,.0f}  via {p.payment_method}"
+            for i, p in enumerate(payments)
+        )
+        return (
+            f"Recent payments for {primary_loan.loan_id}:\n{lines}"
+        )
+
+    # ── 3. Number of payments due / pending EMIs ─────────────────
+    if any(kw in msg for kw in ["payments due", "how many payment", "number of payment",
+                                  "pending payment", "overdue payment", "total payment",
+                                  "payments pending", "emi pending", "emis due",
+                                  "payment count", "how many emi"]):
+        if not primary_loan:
+            return "I don't see any active loans on your account."
+        if is_locked or mentioned_loan_id or len(active_loans) == 1:
+            loan = primary_loan
+            dpd = loan.days_past_due
+            overdue_emis = max(0, dpd // 30) if dpd > 0 else 0
+            if dpd > 0:
+                return (
+                    f"{loan.loan_id}: {dpd} days past due (~{overdue_emis} overdue EMI(s)).\n"
+                    f"Next EMI: ₹{loan.emi_amount:,.0f} due {loan.emi_due_date}."
+                )
+            return f"{loan.loan_id}: Account is current. Next EMI ₹{loan.emi_amount:,.0f} due {loan.emi_due_date}."
+        lines = "\n".join(
+            f"  • {l.loan_id}: ₹{l.emi_amount:,.0f} due {l.emi_due_date}"
+            + (f" — ⚠️ {l.days_past_due}d overdue" if l.days_past_due > 0 else " ✅")
+            for l in loans
+        )
+        return f"Upcoming EMIs:\n{lines}"
+
+    # ── 4. Session history / previous questions ───────────────────
     if any(kw in msg for kw in _HISTORY_KEYWORDS) and session_id:
         past_msgs = (
             db.query(ChatMessage)
@@ -523,98 +637,121 @@ def _fallback_response(
             .order_by(ChatMessage.timestamp.asc())
             .all()
         )
-        # Exclude the current message (last one)
         past_msgs = past_msgs[:-1] if past_msgs else []
         if past_msgs:
             lines = "\n".join(
                 f"  {i+1}. {m.message_text} ({m.timestamp[11:16] if m.timestamp else ''})"
                 for i, m in enumerate(past_msgs)
             )
-            return (
-                f"Here are the questions you've asked in this session{', ' + name if name else ''}:\n"
-                f"{lines}\n\n"
-                "Is there anything specific you'd like me to follow up on?"
-            )
-        return (
-            f"This appears to be the start of our conversation{', ' + name if name else ''}. "
-            "You haven't asked any previous questions yet. How can I help you today?"
-        )
+            return f"Questions asked in this session:\n{lines}"
+        return "No previous questions in this session yet."
 
-    # ── 3. Loan ID / list loans ────────────────────────────────────
+    # ── 5. Loan ID query ──────────────────────────────────────────
     if any(kw in msg for kw in ["loan id", "loan number", "my loan", "which loan",
                                   "loan detail", "what is my loan", "list loan"]):
+        if is_locked and primary_loan:
+            return (
+                f"Loan ID: {primary_loan.loan_id} ({primary_loan.loan_type})\n"
+                f"Outstanding: ₹{primary_loan.outstanding_balance:,.0f} | EMI: ₹{primary_loan.emi_amount:,.0f} due {primary_loan.emi_due_date}"
+            )
         if loans:
             lines = "\n".join(
                 f"  • {l.loan_id} ({l.loan_type}) — ₹{l.outstanding_balance:,.0f} outstanding"
                 for l in loans
             )
-            return f"Here are your active loans{', ' + name if name else ''}:\n{lines}"
+            return f"Your active loans:\n{lines}"
         return "You currently have no active loans on file."
 
-    # ── 4. EMI / payment ──────────────────────────────────────────
-    if any(kw in msg for kw in ["emi", "payment", "due", "next", "instalment", "installment"]):
-        if loans:
-            loan = loans[0]
+    # ── 6. EMI / payment due ──────────────────────────────────────
+    if any(kw in msg for kw in ["emi", "due", "next", "instalment", "installment", "due date"]):
+        if not primary_loan:
+            return "I don't see any active loans on your account."
+        if is_locked or mentioned_loan_id or len(active_loans) == 1:
+            loan = primary_loan
+            status = "✅ Current" if loan.days_past_due == 0 else f"⚠️ {loan.days_past_due} days past due"
             return (
-                f"Your next EMI of ₹{loan.emi_amount:,.0f} is due on {loan.emi_due_date} "
-                f"for loan {loan.loan_id}. "
-                f"Your outstanding balance is ₹{loan.outstanding_balance:,.0f}."
+                f"{loan.loan_id} EMI: ₹{loan.emi_amount:,.0f} due {loan.emi_due_date} | {status}"
             )
-        return "I don't see any active loans on your account. Please contact us if you believe this is an error."
+        lines = "\n".join(
+            f"  • {l.loan_id}: ₹{l.emi_amount:,.0f} due {l.emi_due_date}"
+            for l in loans
+        )
+        return f"Your upcoming EMIs:\n{lines}"
 
-    # ── 5. Grace period ───────────────────────────────────────────
+    # ── 7. Grace period ───────────────────────────────────────────
     if any(kw in msg for kw in ["grace", "extension", "more time", "extra time"]):
-        if loans:
-            dpd = loans[0].days_past_due
-            if dpd < 30:
-                return (
-                    "Based on your current account status, you may be eligible for a grace period of up to 7 days. "
-                    "You can submit a grace period request from the 'Your Loans' section. "
-                    "A bank officer will review and respond within 1-2 business days."
-                )
+        if primary_loan and primary_loan.days_past_due < 30:
             return (
-                "Your current overdue period may affect grace period eligibility. "
-                "Please contact the bank directly — we can discuss the best options available to you, "
-                "including loan restructuring."
+                "You may be eligible for a grace period of up to 7 days. "
+                "Submit a request from the 'Your Loans' section — a bank officer will review within 1-2 business days."
             )
-
-    # ── 6. Restructuring ──────────────────────────────────────────
-    if any(kw in msg for kw in ["restructur", "reduce emi", "extend tenure", "lower emi"]):
         return (
-            "Loan restructuring options are available if you are facing repayment difficulties. "
-            "Options include extending your loan tenure or temporarily reducing your EMI. "
-            "You can submit a restructure request from the 'Your Loans' section, "
-            "and a bank officer will review it within 2 business days."
+            "Your overdue status may affect grace period eligibility. "
+            "Please contact the bank to discuss available options."
         )
 
-    # ── 7. Balance ────────────────────────────────────────────────
-    if any(kw in msg for kw in ["balance", "outstanding", "how much", "total due"]):
-        if loans:
-            total = sum(l.outstanding_balance for l in loans)
-            if len(loans) > 1:
-                lines = "\n".join(f"  • {l.loan_id}: ₹{l.outstanding_balance:,.0f}" for l in loans)
-                return f"Your total outstanding balance is ₹{total:,.0f}:\n{lines}"
-            return f"Your outstanding balance for {loans[0].loan_id} is ₹{loans[0].outstanding_balance:,.0f}."
+    # ── 8. Restructuring ──────────────────────────────────────────
+    if any(kw in msg for kw in ["restructur", "reduce emi", "extend tenure", "lower emi"]):
+        return (
+            "Loan restructuring (EMI reduction or tenure extension) is available if you're facing difficulties. "
+            "Submit a request from 'Your Loans' — a bank officer will review within 2 business days."
+        )
 
-    # ── 8. Greeting ───────────────────────────────────────────────
+    # ── 9. Balance ────────────────────────────────────────────────
+    if any(kw in msg for kw in ["balance", "outstanding", "how much", "total due"]):
+        if not primary_loan:
+            return "I don't see any active loans on your account."
+        if is_locked or mentioned_loan_id or len(active_loans) == 1:
+            loan = primary_loan
+            return f"Outstanding balance for {loan.loan_id}: ₹{loan.outstanding_balance:,.0f}."
+        total = sum(l.outstanding_balance for l in loans)
+        lines = "\n".join(f"  • {l.loan_id}: ₹{l.outstanding_balance:,.0f}" for l in loans)
+        return f"Total outstanding: ₹{total:,.0f}\n{lines}"
+
+    # ── 10. Customer name query ────────────────────────────────────
+    if any(kw in msg for kw in ["my name", "what is my name", "what's my name",
+                                  "who am i", "name is"]):
+        full_name = db.query(Customer).filter(Customer.customer_id == customer_id).first()
+        if full_name:
+            return f"Your name is {full_name.customer_name}."
+        return "I don't have your name on file."
+
+    # ── 11. Late payments / missed payments ────────────────────────
+    if any(kw in msg for kw in ["late payment", "missed payment", "how many late",
+                                  "late emi", "missed emi", "delayed payment",
+                                  "overdue count", "default count"]):
+        if not primary_loan:
+            return "I don't see any active loans on your account."
+        # Count payments that are likely late (using days_past_due as indicator)
+        # and also check PaymentHistory for any records to count
+        all_payments = (
+            db.query(PaymentHistory)
+            .filter(PaymentHistory.loan_id == primary_loan.loan_id)
+            .order_by(PaymentHistory.payment_date.desc())
+            .all()
+        )
+        dpd = primary_loan.days_past_due
+        overdue_emis = max(0, dpd // 30) if dpd > 0 else 0
+        if overdue_emis > 0:
+            return (
+                f"Loan {primary_loan.loan_id} is currently {dpd} days past due, "
+                f"indicating approximately {overdue_emis} overdue EMI(s)."
+            )
+        return f"No late payments detected for {primary_loan.loan_id} — account is current."
+
+    # ── 12. Greeting ───────────────────────────────────────────────
     if any(kw in msg for kw in ["hello", "hi", "hey", "good morning", "good afternoon"]):
         return (
             f"Hello{', ' + name if name else ''}! I'm your AI banking assistant. "
-            "I can help you with EMI payment information, outstanding balances, "
-            "grace period eligibility, loan restructuring options, and more. "
             "What would you like to know today?"
         )
 
-    # ── 9. Contextual catch-all (no canned loan dump) ─────────────
-    topics = []
-    if loans:
-        topics.append(f"your {loans[0].loan_id} EMI of ₹{loans[0].emi_amount:,.0f} due {loans[0].emi_due_date}")
-    topics += ["grace period options", "loan restructuring", "outstanding balance"]
-    topics_str = ", ".join(topics)
-
-    return (
-        f"I'm here to help{', ' + name if name else ''}. "
-        f"I can assist with: {topics_str}. "
-        "Could you clarify what you'd like to know? "
-        "Or type 'my loans' to see your full loan summary."
-    )
+    # ── 13. Contextual catch-all ──────────────────────────────────
+    if primary_loan:
+        return (
+            f"For loan {primary_loan.loan_id} ({primary_loan.loan_type}): "
+            f"EMI ₹{primary_loan.emi_amount:,.0f} due {primary_loan.emi_due_date}, "
+            f"outstanding ₹{primary_loan.outstanding_balance:,.0f}. "
+            "Ask me anything specific about your loan."
+        )
+    return "How can I help you? Ask me about your loan, EMI, balance, or payment history."

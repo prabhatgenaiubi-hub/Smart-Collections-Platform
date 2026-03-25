@@ -17,21 +17,23 @@ export default function OfficerChat() {
   const [loanErr, setLoanErr] = useState('');
 
   // Quick prompts
-  const genericPrompts = [
-    'What is the total outstanding portfolio?',
-    'How many loans are in High risk segment?',
-    'What are the best recovery strategies?',
-    'Show me summary of overdue accounts',
-  ];
+const genericPrompts = [
+  'What is the total outstanding portfolio?',
+  'How many loans are in High risk segment?',
+  'What are the best recovery strategies?',
+  'Show me a summary of overdue accounts',
+  'Show portfolio summary',
+];
 
-  const loanPrompts = (id) => [
-    `What is the recovery probability for ${id}?`,
-    `Should I approve a grace request for ${id}?`,
-    `What is the sentiment trend for customer of ${id}?`,
-    `What outreach channel should I use for ${id}?`,
-  ];
-
-  useEffect(() => {
+const loanPrompts = (id) => [
+  `What is the recovery probability of ${id}?`,
+  `Should I approve grace request for ${id}?`,
+  `What is the sentiment trend for ${id}?`,
+  `What outreach channel should I use for ${id}?`,
+  `Show payment history of ${id}`,
+  `What is the next EMI due date for ${id}?`,
+  `What is the payment behaviour of ${id}?`,
+];  useEffect(() => {
     api.get('/officer/chat/sessions')
       .then(r => setSessions(r.data.sessions || []))
       .catch(console.error);

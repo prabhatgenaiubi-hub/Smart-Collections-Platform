@@ -183,7 +183,7 @@ export default function LoginPage() {
                   type="text"
                   value={userId}
                   onChange={(e) => setUserId(e.target.value)}
-                  placeholder={role === 'customer' ? 'e.g. CUST001' : 'e.g. OFF001'}
+                  placeholder={role === 'customer' ? 'e.g. CUST001' : 'e.g. 920532'}
                   required
                   className="w-full pl-10 pr-4 py-3 rounded-xl text-sm text-gray-700 outline-none transition-all"
                   style={{ border: '1.5px solid #e2e8f0',
@@ -250,30 +250,6 @@ export default function LoginPage() {
                 : 'Sign In →'}
             </button>
           </form>
-
-          {/* Demo credentials */}
-          <div className="mt-6 rounded-xl overflow-hidden"
-            style={{ border: '1px solid #e2e8f0' }}>
-            <div className="px-4 py-2 flex items-center gap-2"
-              style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-              <span className="text-xs font-bold tracking-wider uppercase"
-                style={{ color: '#003087' }}>Demo Credentials</span>
-            </div>
-            <div className="px-4 py-3 space-y-1.5">
-              {role === 'customer' ? (
-                <>
-                  <p className="text-xs text-gray-600">🟢 <strong>CUST001</strong> / password123 — Arun Mehta</p>
-                  <p className="text-xs text-gray-600">🔴 <strong>CUST003</strong> / password123 — Vikram Nair</p>
-                  <p className="text-xs text-gray-600">🔵 <strong>CUST006</strong> / password123 — Anjali Singh</p>
-                </>
-              ) : (
-                <>
-                  <p className="text-xs text-gray-600">🏛️ <strong>OFF001</strong> / officer123 — Rajesh Kumar</p>
-                  <p className="text-xs text-gray-600">🏛️ <strong>OFF002</strong> / officer123 — Priya Sharma</p>
-                </>
-              )}
-            </div>
-          </div>
 
           {/* Footer */}
           <p className="text-center text-xs text-gray-300 mt-6">

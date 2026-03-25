@@ -941,12 +941,15 @@ def officer_create_session(
         session_id   = session.session_id,
         role         = "assistant",
         message_text = (
-            "Hello! I'm your Collections Intelligence AI assistant. I can help you with:\n"
-            "• Portfolio risk analysis and recovery strategies\n"
-            "• Loan-specific sentiment and behaviour analysis\n"
-            "• Grace period and restructure decision support\n"
-            "• Customer outreach channel recommendations\n\n"
-            "How can I assist you today?"
+            "Hello! I'm your Collections Intelligence AI assistant.\n\n"
+            "Here are some things you can ask me:\n"
+            "  1. What is the total outstanding portfolio?\n"
+            "  2. How many loans are in High risk segment?\n"
+            "  3. What are the best recovery strategies?\n"
+            "  4. Show me a summary of overdue accounts\n"
+            "  5. Show portfolio summary\n\n"
+            "💡 For loan-specific analysis, switch to 'Loan-wise' mode, "
+            "enter the Loan ID in the sidebar, and start a new chat."
         ),
         timestamp    = now,
     )
@@ -1016,39 +1019,92 @@ def officer_send_message(
     )
     db.add(user_msg); db.commit()
 
-    # Try LangGraph workflow (using a pseudo customer_id for context)
+    # ── Greeting intercept — bypass LLM for hi/hello in loan-wise chat ──
+    import re as _re
+    _raw_msg = body.message.strip()
+
+    # Extract effective loan_id FIRST (before stripping prefix for greeting check)
     ai_text = ""
-    # Extract loan_id from message prefix [Loan: LOANXXX] if body.loan_id is empty
     effective_loan_id = body.loan_id
     if not effective_loan_id:
-        import re as _re
-        prefix_match = _re.match(r'\[Loan:\s*(\S+)\]', body.message.strip(), _re.IGNORECASE)
+        prefix_match = _re.match(r'\[Loan:\s*(\S+)\]', _raw_msg, _re.IGNORECASE)
         if prefix_match:
             effective_loan_id = prefix_match.group(1).upper()
 
-    try:
-        # If a loan_id is given, we can pull a real customer_id from it
-        target_customer = None
-        if effective_loan_id:
-            loan_obj = db.query(Loan).filter(Loan.loan_id == effective_loan_id.strip().upper()).first()
-            if loan_obj:
-                target_customer = loan_obj.customer_id
+    # Strip [Loan: LOANXXX] prefix to get the actual user text for greeting detection
+    _msg_body = _re.sub(r'^\[Loan:\s*\S+\]\s*', '', _raw_msg, flags=_re.IGNORECASE).strip()
+    _msg_lower = _msg_body.lower()
 
-        if target_customer:
-            result  = run_chat_response(
-                db          = db,
-                customer_id = target_customer,
-                session_id  = session_id,
-                user_query  = body.message.strip(),
-                loan_id     = effective_loan_id,
+    _GREET_EXACT = {"hi", "hello", "hey", "hii", "helo", "hi!", "hello!", "hey!",
+                    "good morning", "good afternoon", "good evening"}
+    _is_greeting = (_msg_lower in _GREET_EXACT or
+                    any(_msg_lower.startswith(g + " ") for g in ("hi", "hello", "hey")))
+
+    if _is_greeting and effective_loan_id:
+        # Loan-wise greeting — show loan-specific welcome for the officer
+        loan_obj = db.query(Loan).filter(Loan.loan_id == effective_loan_id.strip().upper()).first()
+        if loan_obj:
+            from backend.db.models import Customer as _Customer
+            cust = db.query(_Customer).filter(_Customer.customer_id == loan_obj.customer_id).first()
+            cust_name = cust.customer_name if cust else loan_obj.customer_id
+            lid = loan_obj.loan_id
+            ai_text = (
+                f"Loan {lid} — {loan_obj.loan_type} | Customer: {cust_name}\n"
+                f"  Outstanding  : ₹{loan_obj.outstanding_balance:,.0f}\n"
+                f"  EMI          : ₹{loan_obj.emi_amount:,.0f} due {loan_obj.emi_due_date}\n"
+                f"  Days Past Due: {loan_obj.days_past_due} | Risk: {loan_obj.risk_segment}\n\n"
+                f"You can ask me:\n"
+                f"  1. What is the recovery probability of {lid}?\n"
+                f"  2. Should I approve grace request for {lid}?\n"
+                f"  3. What is the sentiment trend for {lid}?\n"
+                f"  4. What outreach channel should I use for {lid}?\n"
+                f"  5. Show payment history of {lid}\n"
+                f"  6. What is the next EMI due date for {lid}?\n"
+                f"  7. What is the payment behaviour of {lid}?"
             )
-            ai_text = result.get("llm_response", "")
-    except Exception as e:
-        print(f"[OfficerChat] Workflow error: {e}")
+        else:
+            ai_text = f"Loan {effective_loan_id} not found. Please check the Loan ID and try again."
 
-    # Fallback: officer-specific rule-based response
+    elif _is_greeting:
+        # Generic greeting — no loan selected
+        ai_text = (
+            "Hello! I'm your Collections Intelligence AI assistant.\n\n"
+            "Here are some things you can ask me:\n"
+            "  1. What is the total outstanding portfolio?\n"
+            "  2. How many loans are in High risk segment?\n"
+            "  3. What are the best recovery strategies?\n"
+            "  4. Show me a summary of overdue accounts\n"
+            "  5. Show portfolio summary\n\n"
+            "💡 For loan-specific analysis, switch to 'Loan-wise' mode, "
+            "enter the Loan ID in the sidebar, and start a new chat."
+        )
+
     if not ai_text:
-        ai_text = _officer_fallback(body.message, effective_loan_id, db, session_id)
+        # Try LangGraph workflow (using a pseudo customer_id for context)
+        try:
+            # If a loan_id is given, we can pull a real customer_id from it
+            target_customer = None
+            if effective_loan_id:
+                loan_obj = db.query(Loan).filter(Loan.loan_id == effective_loan_id.strip().upper()).first()
+                if loan_obj:
+                    target_customer = loan_obj.customer_id
+
+            if target_customer:
+                result  = run_chat_response(
+                    db          = db,
+                    customer_id = target_customer,
+                    session_id  = session_id,
+                    user_query  = body.message.strip(),
+                    loan_id     = effective_loan_id,
+                    is_officer  = True,
+                )
+                ai_text = result.get("llm_response", "")
+        except Exception as e:
+            print(f"[OfficerChat] Workflow error: {e}")
+
+        # Fallback: officer-specific rule-based response
+        if not ai_text:
+            ai_text = _officer_fallback(body.message, effective_loan_id, db, session_id)
 
     ai_msg = ChatMessage(
         session_id   = session_id,
@@ -1109,40 +1165,66 @@ def _officer_fallback(
     """
     msg = message.strip().lower()
 
-    # ── 1. Previous questions / history ───────────────────────────
-    _hist_kw = [
-        "previous", "earlier", "last question", "before", "history",
-        "list down", "what did i ask", "what have i asked",
-        "my questions", "past question", "recap", "conversation",
-    ]
-    if any(k in msg for k in _hist_kw) and session_id:
-        past = (
-            db.query(ChatMessage)
-            .filter(ChatMessage.session_id == session_id, ChatMessage.role == "user")
-            .order_by(ChatMessage.timestamp.asc())
-            .all()
-        )
-        past = past[:-1] if past else []
-        if past:
-            lines = "\n".join(
-                f"  {i+1}. {m.message_text}  ({m.timestamp[11:16] if m.timestamp else ''})"
-                for i, m in enumerate(past)
-            )
-            return (
-                f"Here are the questions asked in this session:\n{lines}\n\n"
-                "Would you like me to follow up on any of these?"
-            )
-        return (
-            "This is the start of the session — no previous questions yet. "
-            "You can ask about a loan ID, portfolio overview, risk segments, or pending requests."
-        )
-
-    # ── 2. Loan-wise queries ──────────────────────────────────────
+    # ── 1. Loan-wise queries ──────────────────────────────────────
     if loan_id:
         loan = db.query(Loan).filter(Loan.loan_id == loan_id.strip().upper()).first()
         if loan:
             customer = db.query(Customer).filter(Customer.customer_id == loan.customer_id).first()
             name = customer.customer_name if customer else "the customer"
+
+            # ── Payment history — checked FIRST to avoid hist_kw clash ──
+            if any(k in msg for k in ["payment history", "previous payment", "past payment",
+                                       "payment record", "show payment", "repayment"]):
+                payments = (
+                    db.query(PaymentHistory)
+                    .filter(PaymentHistory.loan_id == loan.loan_id)
+                    .order_by(PaymentHistory.payment_date.desc())
+                    .limit(6)
+                    .all()
+                )
+                if not payments:
+                    return f"No payment records found for loan {loan.loan_id}."
+                lines = "\n".join(
+                    f"  {i+1}. {p.payment_date}  —  ₹{p.payment_amount:,.0f}  via {p.payment_method}"
+                    for i, p in enumerate(payments)
+                )
+                total_paid = sum(p.payment_amount for p in payments)
+                return (
+                    f"Payment History for {loan.loan_id} ({name}) — last {len(payments)} records:\n"
+                    f"{lines}\n\n"
+                    f"Total paid in this view: ₹{total_paid:,.0f}"
+                )
+
+            # ── Payment behaviour — checked before sentiment to avoid clash ──
+            if any(k in msg for k in ["payment behaviour", "payment behavior",
+                                       "paying behaviour", "payment pattern",
+                                       "paying pattern", "consistency", "irregular", "regular"]):
+                payments = (
+                    db.query(PaymentHistory)
+                    .filter(PaymentHistory.loan_id == loan.loan_id)
+                    .order_by(PaymentHistory.payment_date.desc())
+                    .all()
+                )
+                if not payments:
+                    return f"No payment data available to assess behaviour for loan {loan.loan_id}."
+                total        = len(payments)
+                on_time      = sum(1 for p in payments if p.payment_amount >= loan.emi_amount * 0.95)
+                missed_ratio = (total - on_time) / total if total > 0 else 0
+                avg_amount   = sum(p.payment_amount for p in payments) / total
+                if missed_ratio < 0.1:
+                    pattern = "✅ Consistent payer — very low risk of default."
+                elif missed_ratio < 0.3:
+                    pattern = "⚠️ Occasional delays — moderate risk. Monitor closely."
+                else:
+                    pattern = "🔴 Irregular payment behaviour — high default risk. Consider escalation."
+                return (
+                    f"Payment Behaviour for {loan.loan_id} ({name}):\n"
+                    f"  Total Payments Recorded : {total}\n"
+                    f"  On-Time / Full Payments : {on_time}\n"
+                    f"  Avg Payment Amount      : ₹{avg_amount:,.0f}  (EMI: ₹{loan.emi_amount:,.0f})\n"
+                    f"  Days Past Due (current) : {loan.days_past_due}\n\n"
+                    f"Assessment: {pattern}"
+                )
 
             if any(k in msg for k in ["grace", "approve", "eligible"]):
                 if loan.days_past_due < 30:
@@ -1157,7 +1239,8 @@ def _officer_fallback(
                     f"Grace period eligibility is low. Consider restructuring instead."
                 )
 
-            if any(k in msg for k in ["sentiment", "tonality", "behaviour", "attitude", "mood"]):
+            # ── Sentiment — only tonality/mood/attitude, NOT "behaviour" ──
+            if any(k in msg for k in ["sentiment", "tonality", "attitude", "mood"]):
                 interactions = (
                     db.query(InteractionHistory)
                     .filter(InteractionHistory.customer_id == loan.customer_id)
@@ -1197,12 +1280,72 @@ def _officer_fallback(
                     f"Suggested action: {'Immediate escalation' if loan.days_past_due > 30 else 'Friendly payment reminder'}."
                 )
 
+            if any(k in msg for k in ["emi", "due date", "next emi", "next payment", "due on", "when is"]):
+                return (
+                    f"EMI Details for {loan.loan_id} ({name}):\n"
+                    f"  Next EMI Due Date : {loan.emi_due_date}\n"
+                    f"  EMI Amount        : ₹{loan.emi_amount:,.0f}\n"
+                    f"  Days Past Due     : {loan.days_past_due}\n"
+                    f"  Outstanding Bal   : ₹{loan.outstanding_balance:,.0f}\n"
+                    + (
+                        f"\n⚠️ This account is overdue by {loan.days_past_due} days."
+                        if loan.days_past_due > 0 else
+                        "\n✅ Account is current — no overdue."
+                    )
+                )
+
+            if any(k in msg for k in ["payments due", "how many payment", "number of payment",
+                                       "pending payment", "overdue payment", "total payment",
+                                       "payment count", "how many emi", "emis due", "emi pending"]):
+                dpd = loan.days_past_due
+                overdue_emis = max(0, dpd // 30) if dpd > 0 else 0
+                status_line = (
+                    f"⚠️ {dpd} days past due — approximately {overdue_emis} overdue EMI(s). Action recommended."
+                    if dpd > 0
+                    else "✅ Account is current — no overdue EMIs."
+                )
+                return (
+                    f"Payment Status for {loan.loan_id} ({name}):\n"
+                    f"  Next EMI Due Date  : {loan.emi_due_date}\n"
+                    f"  Monthly EMI Amount : ₹{loan.emi_amount:,.0f}\n"
+                    f"  Outstanding Balance: ₹{loan.outstanding_balance:,.0f}\n"
+                    f"  {status_line}"
+                )
+
             return (
                 f"Loan {loan.loan_id} — Customer: {name}, Type: {loan.loan_type}, "
                 f"Outstanding: ₹{loan.outstanding_balance:,.0f}, EMI: ₹{loan.emi_amount:,.0f}, "
                 f"DPD: {loan.days_past_due}, Risk: {loan.risk_segment}."
             )
         return f"Loan '{loan_id}' not found in the system."
+
+    # ── 2. Previous questions / session history ────────────────────
+    _hist_kw = [
+        "previous", "earlier", "last question", "before",
+        "list down", "what did i ask", "what have i asked",
+        "my questions", "past question", "recap", "conversation",
+    ]
+    if any(k in msg for k in _hist_kw) and session_id:
+        past = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.role == "user")
+            .order_by(ChatMessage.timestamp.asc())
+            .all()
+        )
+        past = past[:-1] if past else []
+        if past:
+            lines = "\n".join(
+                f"  {i+1}. {m.message_text}  ({m.timestamp[11:16] if m.timestamp else ''})"
+                for i, m in enumerate(past)
+            )
+            return (
+                f"Here are the questions asked in this session:\n{lines}\n\n"
+                "Would you like me to follow up on any of these?"
+            )
+        return (
+            "This is the start of the session — no previous questions yet. "
+            "You can ask about a loan ID, portfolio overview, risk segments, or pending requests."
+        )
 
     # ── 3. Overdue / delinquent accounts ──────────────────────────
     if any(k in msg for k in ["overdue", "past due", "delinquent", "delayed", "missed"]):
@@ -1288,11 +1431,11 @@ def _officer_fallback(
 
     # ── 8. Generic help (actionable, not canned) ──────────────────
     return (
-        "I can help you with:\n"
-        "  - Portfolio overview — 'Show portfolio summary'\n"
-        "  - Overdue accounts  — 'Show overdue accounts'\n"
-        "  - Specific loan     — enter Loan ID in the sidebar and ask\n"
-        "  - Risk breakdown    — 'How many high risk loans?'\n"
-        "  - Pending requests  — 'Show pending grace requests'\n"
-        "  - Recovery strategy — 'What are the best recovery strategies?'"
+        "To analyze a specific loan, switch to 'Loan-wise' mode in the sidebar, "
+        "enter the Loan ID, and start a new chat.\n\n"
+        "For portfolio questions, try:\n"
+        "  • 'What is the total outstanding portfolio?'\n"
+        "  • 'How many loans are in High risk segment?'\n"
+        "  • 'Show me a summary of overdue accounts'\n"
+        "  • 'What are the best recovery strategies?'"
     )
