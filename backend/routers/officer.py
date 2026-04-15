@@ -1439,3 +1439,222 @@ def _officer_fallback(
         "  • 'Show me a summary of overdue accounts'\n"
         "  • 'What are the best recovery strategies?'"
     )
+
+
+# ═════════════════════════════════════════════════════════════════
+# CO-PILOT  (/officer/copilot/...)
+# ═════════════════════════════════════════════════════════════════
+
+from backend.agents.copilot_agent import run_copilot_agent
+from backend.db.models import CallSession, CopilotSuggestion
+import json as _json
+
+
+# ─────────────────────────────────────────────
+# POST /officer/copilot/upload-call
+# ─────────────────────────────────────────────
+
+@router.post("/copilot/upload-call")
+async def copilot_upload_call(
+    customer_id:  str        = Form(...),
+    loan_id:      str        = Form(None),
+    audio_file:   UploadFile = File(...),
+    current_user: dict       = Depends(get_current_officer),
+    db: Session              = Depends(get_db),
+):
+    """
+    Upload a call recording → transcribe (Sarvam STT → Whisper fallback)
+    → run co-pilot analysis → return suggestions, questions, nudges.
+
+    Form fields:
+      - customer_id  (str, required)
+      - loan_id      (str, optional — focus on a specific loan)
+      - audio_file   (binary — mp3 / wav / m4a / webm / ogg / flac)
+    """
+
+    # ── Validate customer ─────────────────────────────────────────
+    customer = db.query(Customer).filter(Customer.customer_id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail=f"Customer '{customer_id}' not found.")
+
+    # ── Save upload to temp file ──────────────────────────────────
+    suffix   = os.path.splitext(audio_file.filename or "audio.webm")[1] or ".webm"
+    tmp_path = None
+    transcript = ""
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            contents = await audio_file.read()
+            tmp.write(contents)
+
+        # ── Try Sarvam STT first (if API key configured) ──────────
+        sarvam_key = os.getenv("SARVAM_API_KEY", "")
+        if sarvam_key:
+            try:
+                import httpx as _httpx
+                with open(tmp_path, "rb") as af:
+                    sarvam_resp = _httpx.post(
+                        "https://api.sarvam.ai/speech-to-text",
+                        headers={"api-subscription-key": sarvam_key},
+                        files={"file": (audio_file.filename or "audio.wav", af, "audio/wav")},
+                        data={"model": "saaras:v2", "with_timestamps": "false"},
+                        timeout=60,
+                    )
+                if sarvam_resp.status_code == 200:
+                    sarvam_data = sarvam_resp.json()
+                    transcript = sarvam_data.get("transcript", "").strip()
+                    print(f"[CoPilot] Sarvam STT success. Language: {sarvam_data.get('language_code')}")
+                else:
+                    print(f"[CoPilot] Sarvam STT failed ({sarvam_resp.status_code}), falling back to Whisper.")
+            except Exception as sarvam_err:
+                print(f"[CoPilot] Sarvam STT error: {sarvam_err}. Falling back to Whisper.")
+
+        # ── Whisper fallback ──────────────────────────────────────
+        if not transcript:
+            try:
+                import whisper as _whisper
+                model      = _whisper.load_model("tiny")
+                result     = model.transcribe(tmp_path, fp16=False)
+                transcript = result.get("text", "").strip()
+                print("[CoPilot] Whisper transcription complete.")
+            except Exception as whisper_err:
+                print(f"[CoPilot] Whisper error: {whisper_err}")
+                transcript = (
+                    f"[Transcription unavailable – error: {whisper_err}] "
+                    f"File: {audio_file.filename}"
+                )
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    if not transcript:
+        transcript = "[No speech detected in the audio file.]"
+
+    # ── Run Co-Pilot agent ────────────────────────────────────────
+    officer_id = current_user.get("user_id", "unknown")
+    result = run_copilot_agent(
+        db          = db,
+        customer_id = customer_id,
+        transcript  = transcript,
+        officer_id  = officer_id,
+        loan_id     = loan_id or None,
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return {
+        "success":              True,
+        "call_session_id":      result["call_session_id"],
+        "customer_id":          customer_id,
+        "customer_name":        result["customer_name"],
+        "transcript":           result["transcript"],
+        "transcript_original":  result.get("transcript_original", result["transcript"]),
+        "transcript_english":   result.get("transcript_english",  result["transcript"]),
+        "language_detected":    result["language_detected"],
+        "sentiment_score":      result["sentiment_score"],
+        "tonality":             result["tonality"],
+        "suggested_responses":  result["suggested_responses"],
+        "questions_to_ask":     result["questions_to_ask"],
+        "nudges":               result["nudges"],
+    }
+
+
+# ─────────────────────────────────────────────
+# GET /officer/copilot/suggestions/{call_session_id}
+# ─────────────────────────────────────────────
+
+@router.get("/copilot/suggestions/{call_session_id}")
+def copilot_get_suggestions(
+    call_session_id: str,
+    current_user:    dict    = Depends(get_current_officer),
+    db: Session              = Depends(get_db),
+):
+    """
+    Fetch stored co-pilot suggestions for a specific call session.
+    """
+    session = db.query(CallSession).filter(
+        CallSession.call_session_id == call_session_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Call session not found.")
+
+    suggestion = db.query(CopilotSuggestion).filter(
+        CopilotSuggestion.call_session_id == call_session_id
+    ).first()
+    if not suggestion:
+        raise HTTPException(status_code=404, detail="Suggestions not found for this session.")
+
+    def _safe_json(val):
+        if not val:
+            return []
+        try:
+            return _json.loads(val)
+        except Exception:
+            return []
+
+    return {
+        "call_session_id":     call_session_id,
+        "customer_id":         session.customer_id,
+        "loan_id":             session.loan_id,
+        "upload_time":         session.upload_time,
+        "language_detected":   session.language_detected,
+        "transcript":          session.transcript,
+        "sentiment_score":     suggestion.sentiment_score,
+        "tonality":            suggestion.tonality,
+        "suggested_responses": _safe_json(suggestion.suggested_responses),
+        "questions_to_ask":    _safe_json(suggestion.questions_to_ask),
+        "nudges":              _safe_json(suggestion.nudges),
+    }
+
+
+# ─────────────────────────────────────────────
+# GET /officer/copilot/history/{customer_id}
+# ─────────────────────────────────────────────
+
+@router.get("/copilot/history/{customer_id}")
+def copilot_get_history(
+    customer_id:  str,
+    current_user: dict    = Depends(get_current_officer),
+    db: Session           = Depends(get_db),
+):
+    """
+    Return a list of all past co-pilot call sessions for a customer.
+    """
+    customer = db.query(Customer).filter(Customer.customer_id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail=f"Customer '{customer_id}' not found.")
+
+    sessions = (
+        db.query(CallSession)
+        .filter(CallSession.customer_id == customer_id)
+        .order_by(CallSession.upload_time.desc())
+        .all()
+    )
+
+    history = []
+    for s in sessions:
+        sugg = db.query(CopilotSuggestion).filter(
+            CopilotSuggestion.call_session_id == s.call_session_id
+        ).first()
+        history.append({
+            "call_session_id":   s.call_session_id,
+            "loan_id":           s.loan_id,
+            "officer_id":        s.officer_id,
+            "upload_time":       s.upload_time,
+            "language_detected": s.language_detected,
+            "status":            s.status,
+            "sentiment_score":   sugg.sentiment_score if sugg else None,
+            "tonality":          sugg.tonality        if sugg else None,
+        })
+
+    return {
+        "customer_id":   customer_id,
+        "customer_name": customer.customer_name,
+        "total":         len(history),
+        "sessions":      history,
+    }

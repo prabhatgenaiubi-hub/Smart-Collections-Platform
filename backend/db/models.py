@@ -167,13 +167,15 @@ class ChatSession(Base):
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
-    message_id   = Column(String, primary_key=True, default=gen_uuid)
-    session_id   = Column(String, ForeignKey("chat_sessions.session_id"), nullable=False)
-    role         = Column(String, nullable=False)   # user / assistant / system
-    message_text = Column(Text, nullable=False)
-    timestamp    = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    message_id        = Column(String, primary_key=True, default=gen_uuid)
+    session_id        = Column(String, ForeignKey("chat_sessions.session_id"), nullable=False)
+    role              = Column(String, nullable=False)   # user / assistant / system
+    message_text      = Column(Text, nullable=False)     # original script (native language)
+    english_text      = Column(Text, nullable=True)      # English translation (for LLM / search)
+    original_language = Column(String, nullable=True)    # detected language e.g. 'Hindi'
+    timestamp         = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    session      = relationship("ChatSession", back_populates="messages")
+    session           = relationship("ChatSession", back_populates="messages")
 
 
 # ─────────────────────────────────────────────
@@ -187,3 +189,41 @@ class BankOfficer(Base):
     email        = Column(String, nullable=False)
     password     = Column(String, nullable=False, default="officer123")
     department   = Column(String, default="Collections")
+
+
+# ─────────────────────────────────────────────
+# Call Sessions Table  (Co-Pilot Feature)
+# ─────────────────────────────────────────────
+class CallSession(Base):
+    __tablename__ = "call_sessions"
+
+    call_session_id   = Column(String, primary_key=True, default=gen_uuid)
+    customer_id       = Column(String, ForeignKey("customers.customer_id"), nullable=False)
+    loan_id           = Column(String, nullable=True)          # optional — specific loan
+    officer_id        = Column(String, nullable=True)          # officer who ran the analysis
+    upload_time       = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    transcript        = Column(Text, nullable=True)            # full transcribed text
+    language_detected = Column(String, default="English")      # detected language
+    status            = Column(String, default="completed")    # completed / failed
+
+    customer          = relationship("Customer", foreign_keys=[customer_id])
+    suggestion        = relationship("CopilotSuggestion", back_populates="call_session", uselist=False)
+
+
+# ─────────────────────────────────────────────
+# Copilot Suggestions Table  (Co-Pilot Feature)
+# ─────────────────────────────────────────────
+class CopilotSuggestion(Base):
+    __tablename__ = "copilot_suggestions"
+
+    suggestion_id       = Column(String, primary_key=True, default=gen_uuid)
+    call_session_id     = Column(String, ForeignKey("call_sessions.call_session_id"), nullable=False)
+    customer_id         = Column(String, nullable=False)
+    sentiment_score     = Column(Float, default=0.0)
+    tonality            = Column(String, default="Neutral")
+    suggested_responses = Column(Text, nullable=True)   # JSON list of strings
+    questions_to_ask    = Column(Text, nullable=True)   # JSON list of strings
+    nudges              = Column(Text, nullable=True)   # JSON list of strings
+    created_at          = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    call_session        = relationship("CallSession", back_populates="suggestion")

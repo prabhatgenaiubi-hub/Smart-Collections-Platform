@@ -8,10 +8,15 @@ Endpoints:
   GET  /customer/loans/{loan_id}/payments → Get payment history for a loan
   GET  /customer/interactions         → Get interaction history
   GET  /customer/dashboard            → Get customer dashboard summary
+  POST /customer/self-cure/chat       → Multilingual self-cure bot (Feature 3)
+  POST /customer/self-cure/transcribe → Voice → text for Self-Cure Bot mic input
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+import os, tempfile
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional
 
 from backend.db.database import get_db
 from backend.db.models import (
@@ -411,3 +416,361 @@ def get_customer_dashboard(
         "preferred_channel":      customer.preferred_channel,
         "relationship_assessment": customer.relationship_assessment,
     }
+
+
+# ═════════════════════════════════════════════════════════════════
+# SELF-CURE BOT  (/customer/self-cure/chat)
+# ═════════════════════════════════════════════════════════════════
+
+class SelfCureRequest(BaseModel):
+    message:  str
+    stage:    Optional[str] = "greeting"   # conversation stage (client tracks + sends back)
+    language: Optional[str] = "auto"       # detected language (sticky across turns)
+
+
+@router.post("/self-cure/chat")
+def self_cure_chat(
+    body:         SelfCureRequest,
+    current_user: dict    = Depends(get_current_customer),
+    db: Session           = Depends(get_db),
+):
+    """
+    One turn of the multilingual Self-Cure Bot conversation.
+
+    The client is responsible for maintaining the conversation state
+    (stage, language) and sending it back with each request.
+
+    Request body:
+        message  (str, required)  — customer's text input
+        stage    (str, optional)  — current stage; defaults to "greeting"
+        language (str, optional)  — detected language; "auto" = detect from message
+
+    Returns:
+        reply         (str)   — bot response text
+        stage         (str)   — next stage to send with the following request
+        quick_replies (list)  — pre-built button options (empty = free text)
+        escalate      (bool)  — True when officer follow-up is needed
+        language      (str)   — detected/carried language name
+        saved         (bool)  — True when a DB record was written this turn
+    """
+    from backend.agents.self_cure_agent import run_self_cure_agent
+
+    customer_id = current_user["user_id"]
+
+    result = run_self_cure_agent(
+        db          = db,
+        customer_id = customer_id,
+        message     = body.message,
+        stage       = body.stage or "greeting",
+        language    = body.language or "auto",
+    )
+
+    return result
+
+
+# ═════════════════════════════════════════════════════════════════
+# SELF-CURE VOICE TRANSCRIBE  (/customer/self-cure/transcribe)
+# ═════════════════════════════════════════════════════════════════
+
+@router.post("/self-cure/transcribe")
+async def self_cure_transcribe(
+    audio_file:    UploadFile         = File(...),
+    language_hint: Optional[str]      = Form(None),   # BCP-47 hint e.g. 'hi-IN'
+    current_user:  dict               = Depends(get_current_customer),
+):
+    """
+    Transcribe a voice recording and return:
+      - transcript       (str)  — ENGLISH text (what user said, translated to English)
+      - detected_language (str) — detected language display name ('Hindi', 'Tamil', etc.)
+      - language_code    (str)  — BCP-47 code ('hi-IN', etc.)
+
+    Pipeline:
+      1. Saaras STT → native script (Devanagari, Tamil script, etc.)
+      2. Language validation/correction (map Urdu→Hindi, Chinese→Telugu, etc.)
+      3. Mayura translation → English text
+      4. Return English transcript + corrected source language
+      5. Chat endpoint uses corrected language for response translation
+    """
+    # ── Save temp file ────────────────────────────────────────────
+    suffix = os.path.splitext(audio_file.filename or "audio.webm")[1] or ".webm"
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            content = await audio_file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        transcript = ""
+        detected_lang = ""
+        source_lang_code = ""
+        sarvam_api_key = os.getenv("SARVAM_API_KEY", "")
+
+        SARVAM_LANG_MAP = {
+            "hi-IN": "Hindi",   "ta-IN": "Tamil",   "te-IN": "Telugu",
+            "kn-IN": "Kannada", "ml-IN": "Malayalam","mr-IN": "Marathi",
+            "gu-IN": "Gujarati","bn-IN": "Bengali", "en-IN": "English",
+            "en-US": "English", "pa-IN": "Punjabi", "od-IN": "Odia",
+        }
+
+        # ── Language correction map (commonly confused languages) ──
+        # Maps non-Indian languages to their Indian equivalents
+        LANG_CORRECTION_MAP = {
+            "ur-PK": "hi-IN",  # Urdu → Hindi (script/pronunciation similar)
+            "ur-IN": "hi-IN",  # Urdu (India) → Hindi
+            "zh-CN": "te-IN",  # Chinese → Telugu (common Saaras misdetection)
+            "zh-TW": "te-IN",  # Chinese Traditional → Telugu
+            "ar-SA": "hi-IN",  # Arabic → Hindi (fallback)
+            "fa-IR": "hi-IN",  # Farsi → Hindi (fallback)
+            "ko-KR": "hi-IN",  # Korean → Hindi (fallback for audio quality issues)
+            "ja-JP": "hi-IN",  # Japanese → Hindi (fallback)
+            "th-TH": "hi-IN",  # Thai → Hindi (fallback)
+            "vi-VN": "hi-IN",  # Vietnamese → Hindi (fallback)
+            "id-ID": "hi-IN",  # Indonesian → Hindi (fallback)
+            "ru-RU": "hi-IN",  # Russian → Hindi (Cyrillic misdetection)
+            "uk-UA": "hi-IN",  # Ukrainian → Hindi (Cyrillic misdetection)
+            "bg-BG": "hi-IN",  # Bulgarian → Hindi (Cyrillic misdetection)
+            "sr-RS": "hi-IN",  # Serbian → Hindi (Cyrillic misdetection)
+            "tr-TR": "hi-IN",  # Turkish → Hindi (fallback)
+            "pl-PL": "hi-IN",  # Polish → Hindi (fallback)
+            "cs-CZ": "hi-IN",  # Czech → Hindi (fallback)
+        }
+
+        # ── Determine language hint to use ────────────────────────
+        # Always pass language hint (default to Hindi if not provided)
+        hint_to_use = language_hint if language_hint and language_hint != "en-IN" else "hi-IN"
+        print(f"[Transcribe] Language hint: {language_hint} → Using: {hint_to_use}")
+
+        # ── Strategy: Use Whisper for Indian languages (more reliable) ──
+        # Saaras often misdetects Indian languages as Russian/Chinese/etc.
+        # Whisper is more reliable for Indian languages but slower
+        use_whisper_first = hint_to_use != "en-IN"  # Use Whisper for all non-English
+        
+        # ── Primary: Whisper for Indian languages ─────────────────
+        if use_whisper_first:
+            print(f"[Transcribe] Using Whisper for {hint_to_use} (more reliable than Saaras)")
+            try:
+                import whisper
+                model = whisper.load_model("tiny")
+                result = model.transcribe(
+                    tmp_path,
+                    language=hint_to_use.split("-")[0] if hint_to_use != "en-IN" else "en",
+                    task="transcribe"
+                )
+                native_transcript = result["text"].strip()
+                source_lang_code = hint_to_use
+                detected_lang = SARVAM_LANG_MAP.get(source_lang_code, "Hindi")
+                
+                print(f"✅ [Transcribe] Whisper: language={detected_lang}, transcript='{native_transcript[:60]}'")
+                
+                # Translate to English if not English
+                transcript = native_transcript
+                if not source_lang_code.startswith("en") and native_transcript:
+                    try:
+                        async with httpx.AsyncClient(timeout=20.0) as client:
+                            mayura_resp = await client.post(
+                                "https://api.sarvam.ai/translate",
+                                headers={
+                                    "api-subscription-key": sarvam_api_key,
+                                    "Content-Type": "application/json",
+                                },
+                                json={
+                                    "input":                 native_transcript,
+                                    "source_language_code":  source_lang_code,
+                                    "target_language_code":  "en-IN",
+                                    "speaker_gender":        "Male",
+                                    "mode":                  "formal",
+                                    "model":                 "mayura:v1",
+                                    "enable_preprocessing":  True,
+                                },
+                            )
+                        if mayura_resp.status_code == 200:
+                            translated = mayura_resp.json().get("translated_text", "").strip()
+                            if translated:
+                                transcript = translated
+                                print(f"✅ [Transcribe] Mayura translated: '{transcript[:60]}'")
+                        else:
+                            print(f"⚠️ [Transcribe] Mayura failed, using native transcript")
+                    except Exception as e:
+                        print(f"⚠️ [Transcribe] Mayura error: {e}, using native transcript")
+                
+                if transcript:
+                    return {
+                        "transcript":         transcript,
+                        "detected_language":  detected_lang,
+                        "language_code":      source_lang_code,
+                    }
+            except Exception as e:
+                print(f"⚠️ [Transcribe] Whisper error: {e}, falling back to Saaras")
+        
+        # ── Fallback: Sarvam Saaras STT (for English or Whisper failure) ──
+        if sarvam_api_key:
+            print(f"[Transcribe] Using Saaras STT (English or fallback)")
+            try:
+                import httpx
+                with open(tmp_path, "rb") as f:
+                    audio_bytes = f.read()
+
+                _MIME_MAP = {
+                    ".webm": "audio/webm", ".ogg": "audio/ogg",
+                    ".mp4":  "audio/mp4",  ".m4a": "audio/mp4",
+                    ".wav":  "audio/wav",  ".mp3": "audio/mpeg",
+                }
+                audio_mime = _MIME_MAP.get(suffix.lower(), "audio/webm")
+                fname      = audio_file.filename or f"audio{suffix}"
+
+                saaras_data: dict = {
+                    "model":                 "saaras:v2",
+                    "with_timestamps":       "false",
+                    "with_disfluencies":     "false",
+                    "language_code":         hint_to_use,  # Use the hint determined earlier
+                }
+                print(f"[Transcribe] ===== SAARAS STT REQUEST =====")
+                print(f"[Transcribe] Using hint: {hint_to_use}")
+                print(f"[Transcribe] Audio file: {fname}, size: {len(audio_bytes)} bytes, mime: {audio_mime}")
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        "https://api.sarvam.ai/speech-to-text",
+                        headers={"api-subscription-key": sarvam_api_key},
+                        files={"file": (fname, audio_bytes, audio_mime)},
+                        data=saaras_data,
+                    )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    native_transcript = (data.get("transcript") or "").strip()
+                    source_lang_code  = data.get("language_code", "") or language_hint or ""
+                    original_detected = source_lang_code  # Store original for logging
+                    
+                    print(f"[Transcribe] ===== SAARAS RESPONSE =====")
+                    print(f"[Transcribe] Detected language: {source_lang_code}")
+                    print(f"[Transcribe] Native transcript: '{native_transcript}'")
+                    print(f"[Transcribe] Transcript length: {len(native_transcript)} chars")
+                    
+                    # ── Validate and correct language (Indian languages only) ──
+                    # If Saaras detected a non-Indian language, map it to closest Indian language
+                    if source_lang_code in LANG_CORRECTION_MAP:
+                        corrected_code = LANG_CORRECTION_MAP[source_lang_code]
+                        print(f"⚠️ [Transcribe] Language correction: {source_lang_code} → {corrected_code}")
+                        source_lang_code = corrected_code
+                    
+                    # If still not in our supported list, default to Hindi
+                    if source_lang_code not in SARVAM_LANG_MAP:
+                        print(f"⚠️ [Transcribe] Unsupported language '{source_lang_code}', defaulting to Hindi")
+                        source_lang_code = "hi-IN"
+                    
+                    detected_lang = SARVAM_LANG_MAP.get(source_lang_code, "Hindi")
+                    
+                    if original_detected != source_lang_code:
+                        print(f"✅ [Transcribe] Corrected: {original_detected} → {source_lang_code} ({detected_lang})")
+                    
+                    # ── Validate transcript quality ──────────────────────────
+                    # Check if transcript contains non-Indian/Latin characters (indicates wrong detection)
+                    is_invalid_script = False
+                    if native_transcript:
+                        # Check for East Asian (CJK), Cyrillic, or other non-Indian scripts
+                        import re
+                        has_cjk = bool(re.search(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]', native_transcript))
+                        has_cyrillic = bool(re.search(r'[\u0400-\u04ff]', native_transcript))
+                        has_arabic_persian = bool(re.search(r'[\u0600-\u06ff\u0750-\u077f]', native_transcript))
+                        
+                        if has_cjk or has_cyrillic or (has_arabic_persian and source_lang_code == "hi-IN"):
+                            is_invalid_script = True
+                            print(f"❌ [Transcribe] INVALID SCRIPT DETECTED in transcript!")
+                            print(f"❌ [Transcribe] Transcript contains: CJK={has_cjk}, Cyrillic={has_cyrillic}, Arabic={has_arabic_persian}")
+                            print(f"❌ [Transcribe] This is NOT a valid Indian language transcription")
+                            print(f"❌ [Transcribe] Rejecting transcript: '{native_transcript}'")
+                            # Don't process this garbage - let Whisper handle it
+                            native_transcript = ""
+                            transcript = ""
+                    
+                    if not is_invalid_script:
+                        print(f"✅ [Transcribe] Script validation passed")
+                    
+                    print(f"✅ [Transcribe] Saaras: language={detected_lang} ({source_lang_code}), native='{native_transcript[:60] if native_transcript else '(rejected)'}'")
+                    
+                    # ── Translate to English using Mayura (if not English) ────
+                    transcript = ""  # Will be set if valid
+                    if native_transcript and not is_invalid_script:  # Only translate if valid
+                        transcript = native_transcript  # Default to native
+                        if not source_lang_code.startswith("en"):
+                            try:
+                                async with httpx.AsyncClient(timeout=20.0) as client:
+                                    mayura_resp = await client.post(
+                                        "https://api.sarvam.ai/translate",
+                                        headers={
+                                            "api-subscription-key": sarvam_api_key,
+                                            "Content-Type": "application/json",
+                                        },
+                                        json={
+                                            "input":                 native_transcript,
+                                            "source_language_code":  source_lang_code,
+                                            "target_language_code":  "en-IN",
+                                            "speaker_gender":        "Male",
+                                            "mode":                  "formal",
+                                            "model":                 "mayura:v1",
+                                            "enable_preprocessing":  True,
+                                        },
+                                    )
+                                if mayura_resp.status_code == 200:
+                                    translated = mayura_resp.json().get("translated_text", "").strip()
+                                    if translated:
+                                        transcript = translated
+                                        print(f"✅ [Transcribe] Mayura translated: '{transcript[:60]}'")
+                                    else:
+                                        print(f"⚠️ [Transcribe] Mayura returned empty, using native transcript")
+                                else:
+                                    print(f"⚠️ [Transcribe] Mayura HTTP {mayura_resp.status_code}, using native transcript")
+                            except Exception as e:
+                                print(f"⚠️ [Transcribe] Mayura error: {e}, using native transcript")
+                        else:
+                            print(f"✅ [Transcribe] English detected, no translation needed")
+                    
+                    if transcript:
+                        return {
+                            "transcript":         transcript,  # English text (translated by Mayura)
+                            "detected_language":  detected_lang or "auto",
+                            "language_code":      source_lang_code or "",
+                        }
+                else:
+                    print(f"[Transcribe] Sarvam {resp.status_code}: {resp.text[:200]}")
+            except Exception as sarvam_err:
+                print(f"[Transcribe] Saaras error: {sarvam_err}")
+
+        # ── Fallback: Whisper tiny ────────────────────────────────
+        if not transcript:
+            print("[Transcribe] Falling back to Whisper tiny")
+            try:
+                import whisper
+                model          = whisper.load_model("tiny")
+                whisper_result = model.transcribe(tmp_path)
+                transcript = (whisper_result.get("text") or "").strip()
+                from backend.agents.copilot_agent import detect_language
+                detected_lang = detect_language(transcript)
+                source_lang_code = {
+                    "Hindi": "hi-IN", "Tamil": "ta-IN", "Telugu": "te-IN",
+                    "Kannada": "kn-IN", "Malayalam": "ml-IN",
+                }.get(detected_lang, "")
+            except Exception as w_err:
+                print(f"[Transcribe] Whisper error: {w_err}")
+
+        if not transcript:
+            raise HTTPException(status_code=422, detail="Could not transcribe audio. Please speak clearly and try again.")
+
+        return {
+            "transcript":         transcript,           # English text (for UI + LLM)
+            "detected_language":  detected_lang or "auto",
+            "language_code":      source_lang_code or "",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Transcribe] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
