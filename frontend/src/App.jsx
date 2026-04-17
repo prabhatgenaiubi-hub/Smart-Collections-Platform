@@ -14,6 +14,7 @@ import RestructureManagement from './pages/officer/RestructureManagement';
 import OfficerChat from './pages/officer/OfficerChat';
 import SentimentAnalysis from './pages/officer/SentimentAnalysis';
 import DigitalOutreach from './pages/officer/DigitalOutreach';
+import AgentPerformance from './pages/officer/AgentPerformance';
 
 // Auth guard
 function PrivateRoute({ children, role }) {
@@ -64,6 +65,7 @@ export default function App() {
           <Route path="chat" element={<OfficerChat />} />
           <Route path="sentiment" element={<SentimentAnalysis />} />
           <Route path="digital-outreach" element={<DigitalOutreach />} />
+          <Route path="agent-coaching" element={<AgentPerformance />} />
         </Route>
 
         {/* Fallback */}

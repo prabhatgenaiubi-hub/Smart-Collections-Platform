@@ -97,28 +97,34 @@ export default function LoanChat({ loan, onClose }) {
     loadSessions();
   };
 
-  // sendMessage(text, _unused, lang)
-  // - text: English text (from transcribe or typed)
-  // - lang: detected language name e.g. 'Hindi' (for response translation)
-  const sendMessage = useCallback(async (textArg, _unused, langArg) => {
-    const text = (textArg ?? input).trim();
+  // sendMessage(englishText, displayText, lang, isVoice)
+  // - englishText: English text for LLM processing (optional, defaults to input)
+  // - displayText: Original language text for UI display (optional, defaults to englishText or input)
+  // - lang: language name e.g. 'Hindi' (optional, defaults to state language)
+  // - isVoice: true if from voice recording (already has English translation)
+  const sendMessage = useCallback(async (englishText, displayText, langArg, isVoice = false) => {
+    // For typed text: englishText = undefined, displayText = undefined, isVoice = false
+    // For voice text: englishText = English translation, displayText = native text, isVoice = true
+    const textForBackend = isVoice ? (englishText ?? input).trim() : (displayText ?? input).trim();
+    const textForDisplay = displayText || englishText || input;
     const lang = langArg ?? language;
-    if (!text || !sessionId || sending) return;
+    if (!textForBackend || !sessionId || sending) return;
     setInput(''); setSending(true); setError('');
-    // Show the English text in the chat bubble with metadata
+    
+    // Show original language text in UI
     const userMsg = {
       role: 'user',
-      message_text: text,
+      message_text: textForDisplay.trim(),  // Show native language text (Hindi, Tamil, etc.)
       timestamp: new Date().toISOString(),
-      isEnglishTranscript: lang !== 'auto' && lang !== 'English', // flag if it's from voice
+      isEnglishTranscript: isVoice, // true if from voice (shows "Transcribed Text" label)
       originalLanguage: lang,
     };
     setMessages(m => [...m, userMsg]);
     try {
       const r = await api.post(`/chat/sessions/${sessionId}/message`, {
-        message:           text,                                   // English text
+        message:           textForBackend,  // English for voice, native for typed
         loan_id:           loan.loan_id,
-        ...(lang !== 'auto' && { language: lang }),                // detected language for response translation
+        ...(lang !== 'auto' && { language: lang }),  // language for response translation
       });
       // Response includes: ai_response, detected_language, analysis
       const aiMsg = { ...r.data.ai_response };
@@ -197,23 +203,31 @@ export default function LoanChat({ loan, onClose }) {
             headers: { 'Content-Type': 'multipart/form-data' },
           });
 
+          console.log('[Voice] Transcription response:', resp.data);
+
           // transcribe now returns:
-          //   transcript         — English text (what user said in English)
+          //   transcript         — English text (for LLM processing)
+          //   native_transcript  — Original language text (for UI display)
           //   detected_language  — display name ('Hindi', 'Tamil', etc.)
           //   language_code      — BCP-47 code ('hi-IN', etc.)
-          const { transcript, detected_language: detectedLang } = resp.data;
+          const { transcript, native_transcript, detected_language: detectedLang } = resp.data;
 
           // DO NOT auto-update language dropdown - respect user's manual selection
           // if (detectedLang && detectedLang !== 'auto') setLanguage(detectedLang);
 
           if (transcript && transcript.trim()) {
-            // Use user's selected language (not detected) for response translation
-            await sendMessage(transcript.trim(), '', language);
+            // For VOICE: Send English transcript to backend, but display native text in UI
+            // native_transcript = Hindi/Tamil (for display)
+            // transcript = English (for backend/LLM)
+            const displayText = native_transcript || transcript;
+            await sendMessage(transcript.trim(), displayText, language, true);  // isVoice=true
           } else {
             setMicError('Could not transcribe audio. Please try speaking clearly.');
           }
-        } catch {
-          setMicError('Transcription failed. Please type your message.');
+        } catch (err) {
+          console.error('[Voice] Transcription error:', err);
+          console.error('[Voice] Error response:', err.response?.data);
+          setMicError('Transcription failed. Please try again.');
         } finally {
           setMicLoading(false);
         }
