@@ -99,6 +99,28 @@ class GenerateReportRequest(BaseModel):
     format: str = "json"  # "json", "summary"
 
 
+class AgentPerformanceItem(BaseModel):
+    agent_id: str
+    name: str
+    performance_score: float
+    recovery_rate: float
+    total_calls: int
+    avatar_color: str
+
+
+class AgentDetailedInsights(BaseModel):
+    last_interactions: List[dict]
+    strengths: List[str]
+    improvements: List[str]
+    coaching_recommendation: str
+
+
+class TeamPerformanceResponse(BaseModel):
+    agents: List[AgentPerformanceItem]
+    period_days: int
+    generated_at: str
+
+
 class GenerateReportResponse(BaseModel):
     report_type: str
     period: dict
@@ -197,6 +219,92 @@ Respond ONLY with valid JSON, no additional text."""
             "sentiment_trend": "Stable",
             "key_moments": [{"time": "mid", "event": "Customer expressed willingness to pay"}]
         }
+
+
+async def _generate_coaching_recommendation(
+    officer_name: str,
+    summaries: list,
+    strengths: list,
+    improvements: list
+) -> str:
+    """
+    Generate comprehensive coaching recommendation using LLM
+    Based on officer's performance across multiple calls
+    """
+    
+    if not summaries:
+        return "Insufficient data to generate coaching recommendations."
+    
+    # Calculate aggregate metrics
+    total_calls = len(summaries)
+    avg_score = sum(s.overall_score for s in summaries) / total_calls
+    avg_sentiment = sum(s.sentiment_end for s in summaries) / total_calls
+    
+    # Count outcomes
+    outcomes = {}
+    for s in summaries:
+        outcome = s.outcome or "Unknown"
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    
+    prompt = f"""You are an expert performance coach for loan collection officers. Generate a comprehensive coaching recommendation for {officer_name}.
+
+PERFORMANCE DATA (Last {total_calls} calls):
+- Average Call Quality Score: {avg_score:.1f}/10
+- Average Customer Sentiment: {avg_sentiment:.2f} (-1 to +1 scale)
+- Call Outcomes: {json.dumps(outcomes)}
+
+IDENTIFIED STRENGTHS:
+{chr(10).join(f"- {s}" for s in strengths[:4])}
+
+AREAS FOR IMPROVEMENT:
+{chr(10).join(f"- {i}" for i in improvements[:4])}
+
+Please generate a detailed coaching recommendation (100-200 words) that includes:
+1. Recognition of specific strengths
+2. 2-3 actionable improvement strategies with concrete steps
+3. Suggested training, mentorship, or development activities
+4. Measurable goals for next 30-60 days
+
+Write in a professional, encouraging, and actionable tone. Focus on specific techniques and outcomes.
+
+COACHING RECOMMENDATION:"""
+
+    try:
+        print(f"[Performance] Generating coaching for {officer_name} using Ollama at {OLLAMA_URL}")
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": "llama3.1:8b",  # Changed from llama3.1 to llama3.1:8b
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.7, "num_predict": 300}
+            },
+            timeout=30
+        )
+        
+        print(f"[Performance] Ollama response status: {response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json().get("response", "").strip()
+            print(f"[Performance] Ollama generated {len(result)} characters")
+            # Clean up any markdown or formatting
+            result = result.replace("**", "").replace("##", "").strip()
+            if result:
+                print(f"[Performance] ✅ Coaching generated successfully")
+                return result
+            else:
+                print(f"[Performance] ⚠️ Empty response from Ollama, using fallback")
+                return f"{officer_name} shows consistent performance with room for growth. Focus on strengthening customer engagement and exploring flexible payment solutions proactively."
+        else:
+            print(f"[Performance] ⚠️ Ollama returned status {response.status_code}, using fallback")
+            print(f"[Performance] Response: {response.text[:200]}")
+            return f"{officer_name} shows consistent performance with room for growth. Focus on strengthening customer engagement and exploring flexible payment solutions proactively."
+            
+    except Exception as e:
+        print(f"[Performance] ❌ LLM coaching generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"{officer_name} demonstrates solid performance. Continue building on identified strengths while addressing improvement areas through targeted practice and mentorship."
 
 
 # ─────────────────────────────────────────────
@@ -390,6 +498,75 @@ async def get_team_dashboard(
     }
 
 
+
+# ─────────────────────────────────────────────
+# Endpoint: Get Team Performance (All Officers)
+# ─────────────────────────────────────────────
+@router.get("/team", response_model=TeamPerformanceResponse)
+async def get_team_performance(
+    period_days: int = 30,
+    db: Session = Depends(get_db)
+):
+    """
+    Get performance metrics for all officers
+    Returns aggregated data from CallSummary table
+    """
+    
+    # Calculate date range
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=period_days)
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+    
+    # Get all officers
+    officers = db.query(BankOfficer).all()
+    
+    agents = []
+    avatar_colors = ["bg-blue-500", "bg-green-500", "bg-purple-500", "bg-orange-500", 
+                     "bg-pink-500", "bg-red-500", "bg-indigo-500", "bg-yellow-500"]
+    
+    for idx, officer in enumerate(officers):
+        # Get call summaries for this officer in the period
+        summaries = db.query(CallSummary).filter(
+            CallSummary.officer_id == officer.officer_id,
+            CallSummary.call_date >= start_str,
+            CallSummary.call_date <= end_str
+        ).all()
+        
+        if not summaries:
+            # Skip officers with no calls in this period
+            continue
+        
+        total_calls = len(summaries)
+        
+        # Calculate recovery rate (successful outcomes)
+        successful_outcomes = ["Payment Received", "Payment Scheduled", "Grace Period Approved", 
+                              "Restructure Approved", "Settlement Agreed"]
+        successful = sum(1 for s in summaries if s.outcome in successful_outcomes)
+        recovery_rate = round((successful / total_calls * 100), 1) if total_calls > 0 else 0.0
+        
+        # Calculate performance score (average overall_score)
+        performance_score = round(sum(s.overall_score for s in summaries) / total_calls, 1) if total_calls > 0 else 0.0
+        
+        agents.append(AgentPerformanceItem(
+            agent_id=officer.officer_id,
+            name=officer.officer_name,
+            performance_score=performance_score,
+            recovery_rate=recovery_rate,
+            total_calls=total_calls,
+            avatar_color=avatar_colors[idx % len(avatar_colors)]
+        ))
+    
+    # Sort by performance score descending
+    agents.sort(key=lambda x: x.performance_score, reverse=True)
+    
+    return TeamPerformanceResponse(
+        agents=agents,
+        period_days=period_days,
+        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+
+
 # ─────────────────────────────────────────────
 # Endpoint: Get Individual Officer Performance
 # ─────────────────────────────────────────────
@@ -455,6 +632,131 @@ async def get_officer_performance(
         avg_sentiment=round(avg_sentiment, 2),
         escalation_rate=round(escalation_rate, 1),
         overall_score=round(overall_score, 2)
+    )
+
+
+# ─────────────────────────────────────────────
+# Endpoint: Get Officer Detailed Insights
+# ─────────────────────────────────────────────
+@router.get("/officer/{officer_id}/insights", response_model=AgentDetailedInsights)
+async def get_officer_insights(
+    officer_id: str,
+    period_days: int = 30,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed coaching insights for a specific officer:
+    - Last 3 interactions
+    - Strengths (from AI analysis)
+    - Improvements needed
+    - AI-generated coaching recommendations
+    """
+    
+    # Get officer details
+    officer = db.query(BankOfficer).filter(BankOfficer.officer_id == officer_id).first()
+    if not officer:
+        raise HTTPException(status_code=404, detail="Officer not found")
+    
+    # Calculate date range
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=period_days)
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+    
+    # Get call summaries for this officer, sorted by date (most recent first)
+    summaries = db.query(CallSummary).filter(
+        CallSummary.officer_id == officer_id,
+        CallSummary.call_date >= start_str,
+        CallSummary.call_date <= end_str
+    ).order_by(CallSummary.call_date.desc()).limit(3).all()
+    
+    if not summaries:
+        # Return empty insights if no calls
+        return AgentDetailedInsights(
+            last_interactions=[],
+            strengths=["No call data available for this period"],
+            improvements=["Insufficient data to provide recommendations"],
+            coaching_recommendation="No calls recorded in the selected period. Encourage the officer to engage with more customers."
+        )
+    
+    # Build last interactions
+    last_interactions = []
+    for summary in summaries:
+        customer = db.query(Customer).filter(Customer.customer_id == summary.customer_id).first()
+        last_interactions.append({
+            "id": summary.summary_id,
+            "customer_name": customer.customer_name if customer else "Unknown Customer",
+            "date": summary.call_date,
+            "outcome": summary.outcome or "No outcome recorded",
+            "sentiment": "Positive" if summary.sentiment_end > 0.3 else ("Negative" if summary.sentiment_end < -0.3 else "Neutral"),
+            "duration": f"{int(summary.call_duration // 60):02d}:{int(summary.call_duration % 60):02d} min"
+        })
+    
+    # Aggregate strengths and improvements from LAST 3 CALLS ONLY (not all calls in period)
+    # Use the same 'summaries' list that was already fetched for last_interactions
+    recent_summaries = summaries  # These are already the last 3 calls, ordered by date desc
+    
+    # Parse strengths and improvements from JSON
+    all_strengths = []
+    all_improvements = []
+    for s in recent_summaries:
+        if s.strengths:
+            try:
+                strengths_list = json.loads(s.strengths) if isinstance(s.strengths, str) else s.strengths
+                all_strengths.extend(strengths_list)
+            except:
+                pass
+        if s.improvements:
+            try:
+                improvements_list = json.loads(s.improvements) if isinstance(s.improvements, str) else s.improvements
+                all_improvements.extend(improvements_list)
+            except:
+                pass
+    
+    # Get unique strengths and improvements (preserve order, remove duplicates)
+    seen_strengths = set()
+    top_strengths = []
+    for s in all_strengths:
+        if s not in seen_strengths:
+            seen_strengths.add(s)
+            top_strengths.append(s)
+    
+    seen_improvements = set()
+    top_improvements = []
+    for i in all_improvements:
+        if i not in seen_improvements:
+            seen_improvements.add(i)
+            top_improvements.append(i)
+    
+    # Limit to reasonable number
+    top_strengths = top_strengths[:6]
+    top_improvements = top_improvements[:5]
+    
+    if not top_strengths:
+        top_strengths = ["Consistent call handling", "Follows standard procedures"]
+    if not top_improvements:
+        top_improvements = ["Continue current performance trajectory"]
+    
+    # Generate comprehensive coaching recommendation using LLM
+    # Pass ALL summaries in period for comprehensive analysis
+    all_summaries_for_coaching = db.query(CallSummary).filter(
+        CallSummary.officer_id == officer_id,
+        CallSummary.call_date >= start_str,
+        CallSummary.call_date <= end_str
+    ).all()
+    
+    coaching_recommendation = await _generate_coaching_recommendation(
+        officer.officer_name,
+        all_summaries_for_coaching,  # Use all summaries for coaching context
+        top_strengths,
+        top_improvements
+    )
+    
+    return AgentDetailedInsights(
+        last_interactions=last_interactions,
+        strengths=top_strengths,
+        improvements=top_improvements,
+        coaching_recommendation=coaching_recommendation
     )
 
 
@@ -525,6 +827,19 @@ async def analyze_batch_calls(request: AnalyzeBatchRequest, db: Session = Depend
         "remaining_unanalyzed": total_unanalyzed - analyzed_count,
         "message": f"Successfully analyzed {analyzed_count} out of {total_unanalyzed} unanalyzed calls"
     }
+
+
+# ─────────────────────────────────────────────
+# Endpoint: Analyze All Unanalyzed Calls (Simple GET)
+# ─────────────────────────────────────────────
+@router.get("/analyze-all")
+async def analyze_all_calls(limit: int = 50, db: Session = Depends(get_db)):
+    """
+    Simple GET endpoint to analyze all unanalyzed calls
+    Useful for quick triggers without POST body
+    """
+    request = AnalyzeBatchRequest(limit=limit)
+    return await analyze_batch_calls(request, db)
 
 
 # ─────────────────────────────────────────────

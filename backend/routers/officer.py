@@ -1446,8 +1446,9 @@ def _officer_fallback(
 # ═════════════════════════════════════════════════════════════════
 
 from backend.agents.copilot_agent import run_copilot_agent
-from backend.db.models import CallSession, CopilotSuggestion
+from backend.db.models import CallSession, CopilotSuggestion, CallSummary
 import json as _json
+import requests as _requests
 
 
 # ─────────────────────────────────────────────
@@ -1546,6 +1547,81 @@ async def copilot_upload_call(
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
+
+    call_session_id = result["call_session_id"]
+    
+    # ── Trigger AI analysis in background (non-blocking) ──────────
+    # This creates a CallSummary record used by Agent Performance module
+    # We run this in background to avoid blocking the upload response
+    import threading
+    
+    def background_analysis():
+        """Run AI analysis in background thread"""
+        try:
+            from backend.routers.performance import _analyze_call_with_llm
+            from backend.db.database import SessionLocal
+            
+            # Create new DB session for background thread
+            bg_db = SessionLocal()
+            
+            # Get the call session
+            call_session = bg_db.query(CallSession).filter(
+                CallSession.call_session_id == call_session_id
+            ).first()
+            
+            if call_session and call_session.transcript:
+                # Check if already analyzed
+                existing_summary = bg_db.query(CallSummary).filter(
+                    CallSummary.call_session_id == call_session_id
+                ).first()
+                
+                if not existing_summary:
+                    print(f"[CoPilot] Starting background AI analysis for call {call_session_id}...")
+                    
+                    # Run AI analysis
+                    sentiment_data = {
+                        "sentiment_score": result.get("sentiment_score", 0.0),
+                        "tonality": result.get("tonality", "Neutral")
+                    }
+                    
+                    analysis = _analyze_call_with_llm(call_session.transcript, sentiment_data)
+                    
+                    # Create CallSummary record
+                    from datetime import datetime as _dt
+                    call_summary = CallSummary(
+                        call_session_id=call_session_id,
+                        customer_id=customer_id,
+                        officer_id=officer_id,
+                        call_date=_dt.now().strftime("%Y-%m-%d"),
+                        call_duration=0.0,  # Duration not available from upload
+                        outcome="Uploaded Call",  # Default outcome
+                        sentiment_start=0.0,
+                        sentiment_end=result.get("sentiment_score", 0.0),
+                        sentiment_trend=analysis.get("sentiment_trend", "Stable"),
+                        tonality=result.get("tonality", "Neutral"),
+                        key_moments=_json.dumps(analysis.get("key_moments", [])),
+                        strengths=_json.dumps(analysis.get("strengths", [])),
+                        improvements=_json.dumps(analysis.get("improvements", [])),
+                        coaching_tips=_json.dumps(analysis.get("coaching_tips", [])),
+                        overall_score=analysis.get("overall_score", 7.0)
+                    )
+                    bg_db.add(call_summary)
+                    bg_db.commit()
+                    print(f"[CoPilot] ✅ AI analysis completed for call {call_session_id}")
+                else:
+                    print(f"[CoPilot] Call {call_session_id} already analyzed, skipping")
+            
+            bg_db.close()
+        except Exception as analysis_err:
+            print(f"[CoPilot] ❌ Background AI analysis failed: {analysis_err}")
+            import traceback
+            traceback.print_exc()
+    
+    # Start background thread
+    analysis_thread = threading.Thread(target=background_analysis)
+    analysis_thread.daemon = True
+    analysis_thread.start()
+    print(f"[CoPilot] AI analysis queued in background for call {call_session_id}")
 
     return {
         "success":              True,

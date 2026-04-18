@@ -3,9 +3,10 @@
  * Two-panel layout: Left (Agent List) | Right (Detailed Insights)
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import api from '../../api';
 
-// Dummy data for agents
+// Dummy data kept as fallback
 const DUMMY_AGENTS = [
   {
     agent_id: "1",
@@ -354,9 +355,75 @@ const AGENT_INSIGHTS = {
 
 const AgentPerformance = () => {
   const [selectedAgent, setSelectedAgent] = useState(null);
+  const [agents, setAgents] = useState([]);
+  const [insights, setInsights] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingInsights, setLoadingInsights] = useState(false);
+  const [error, setError] = useState(null);
+  const [useDummyData, setUseDummyData] = useState(false);
+
+  // Fetch team performance on component mount
+  useEffect(() => {
+    fetchTeamPerformance();
+  }, []);
+
+  const fetchTeamPerformance = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await api.get('/performance/team?period_days=30');
+      
+      if (response.data.agents && response.data.agents.length > 0) {
+        setAgents(response.data.agents);
+        setUseDummyData(false);
+      } else {
+        // No real data available, use dummy data
+        console.log('[AgentPerformance] No real data available, using dummy data');
+        setAgents(DUMMY_AGENTS);
+        setUseDummyData(true);
+      }
+    } catch (err) {
+      console.error('[AgentPerformance] Failed to fetch team performance:', err);
+      setError('Failed to load team performance. Using sample data.');
+      setAgents(DUMMY_AGENTS);
+      setUseDummyData(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchAgentInsights = async (agentId) => {
+    if (useDummyData) {
+      // Use dummy insights
+      console.log('[AgentPerformance] Using dummy insights for agent:', agentId);
+      setInsights(AGENT_INSIGHTS[agentId] || null);
+      return;
+    }
+
+    try {
+      setLoadingInsights(true);
+      console.log('[AgentPerformance] Fetching real insights for agent:', agentId);
+      const response = await api.get(`/performance/officer/${agentId}/insights?period_days=30`);
+      console.log('[AgentPerformance] Real insights received:', response.data);
+      setInsights(response.data);
+    } catch (err) {
+      console.error('[AgentPerformance] Failed to fetch insights:', err);
+      console.error('[AgentPerformance] Error details:', err.response?.data);
+      // Fallback to dummy data if available
+      setInsights(AGENT_INSIGHTS[agentId] || {
+        last_interactions: [],
+        strengths: ['Unable to load insights'],
+        improvements: ['Please try again later'],
+        coaching_recommendation: 'Insights temporarily unavailable.'
+      });
+    } finally {
+      setLoadingInsights(false);
+    }
+  };
 
   const handleAgentClick = (agent) => {
     setSelectedAgent(agent);
+    fetchAgentInsights(agent.agent_id);
   };
 
   const getScoreColor = (score) => {
@@ -398,12 +465,32 @@ const AgentPerformance = () => {
         {/* Left Panel - Agent List */}
         <div className="w-96 bg-white border-r border-gray-200 flex flex-col">
           <div className="p-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-800">Team Agents ({DUMMY_AGENTS.length})</h2>
+            <h2 className="text-lg font-semibold text-gray-800">
+              Team Agents ({agents.length})
+              {useDummyData && <span className="ml-2 text-xs text-amber-600">(Sample Data)</span>}
+            </h2>
             <p className="text-xs text-gray-500 mt-1">Click an agent to view detailed insights</p>
+            {error && (
+              <div className="mt-2 text-xs text-amber-600 bg-amber-50 p-2 rounded">
+                {error}
+              </div>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            {DUMMY_AGENTS.map((agent) => (
+            {loading ? (
+              <div className="flex flex-col items-center justify-center h-64">
+                <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
+                <p className="text-sm text-gray-500 mt-4">Loading agents...</p>
+              </div>
+            ) : agents.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-64 text-center px-6">
+                <p className="text-5xl mb-4">📊</p>
+                <p className="text-gray-600 font-medium">No agent data available</p>
+                <p className="text-sm text-gray-400 mt-2">Performance data will appear here once calls are analyzed</p>
+              </div>
+            ) : (
+              agents.map((agent) => (
               <div
                 key={agent.agent_id}
                 onClick={() => handleAgentClick(agent)}
@@ -458,7 +545,8 @@ const AgentPerformance = () => {
                   </div>
                 </div>
               </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
 
@@ -499,13 +587,24 @@ const AgentPerformance = () => {
                 </div>
               </div>
 
-              {/* Last 3 Interactions */}
-              <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                  <span>📞</span> Last 3 Interactions
-                </h3>
-                <div className="space-y-3">
-                  {AGENT_INSIGHTS[selectedAgent.agent_id]?.last_interactions.map((interaction) => (
+              {/* Loading State for Insights */}
+              {loadingInsights ? (
+                <div className="bg-white rounded-lg shadow p-6 flex items-center justify-center h-64">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent mx-auto"></div>
+                    <p className="text-sm text-gray-500 mt-4">Loading insights...</p>
+                  </div>
+                </div>
+              ) : insights ? (
+                <>
+                  {/* Last 3 Interactions */}
+                  <div className="bg-white rounded-lg shadow p-6">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                      <span>📞</span> Last 3 Interactions
+                    </h3>
+                    {insights.last_interactions && insights.last_interactions.length > 0 ? (
+                      <div className="space-y-3">
+                        {insights.last_interactions.map((interaction) => (
                     <div key={interaction.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
@@ -533,51 +632,60 @@ const AgentPerformance = () => {
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-gray-500 text-sm">No recent interactions available</p>
+                    )}
+                  </div>
 
-              {/* Strengths */}
-              <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                  <span>💪</span> Strengths
-                </h3>
-                <ul className="space-y-2">
-                  {AGENT_INSIGHTS[selectedAgent.agent_id]?.strengths.map((strength, index) => (
+                  {/* Strengths */}
+                  <div className="bg-white rounded-lg shadow p-6">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                      <span>💪</span> Strengths
+                    </h3>
+                    <ul className="space-y-2">
+                      {insights.strengths && insights.strengths.map((strength, index) => (
                     <li key={index} className="flex items-start gap-2">
                       <span className="text-green-500 text-lg mt-0.5">✓</span>
                       <span className="text-gray-700">{strength}</span>
                     </li>
                   ))}
-                </ul>
-              </div>
+                    </ul>
+                  </div>
 
-              {/* Improvement Areas */}
-              <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                  <span>📈</span> Improvement Areas
-                </h3>
-                <ul className="space-y-2">
-                  {AGENT_INSIGHTS[selectedAgent.agent_id]?.improvements.map((improvement, index) => (
-                    <li key={index} className="flex items-start gap-2">
-                      <span className="text-orange-500 text-lg mt-0.5">→</span>
-                      <span className="text-gray-700">{improvement}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+                  {/* Improvement Areas */}
+                  <div className="bg-white rounded-lg shadow p-6">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                      <span>📈</span> Improvement Areas
+                    </h3>
+                    <ul className="space-y-2">
+                      {insights.improvements && insights.improvements.map((improvement, index) => (
+                        <li key={index} className="flex items-start gap-2">
+                          <span className="text-orange-500 text-lg mt-0.5">→</span>
+                          <span className="text-gray-700">{improvement}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
 
-              {/* AI Coaching Recommendation */}
-              <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg shadow-lg p-6 border-2 border-blue-200">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                  <span>🤖</span> AI-Generated Coaching Recommendation
-                </h3>
-                <div className="bg-white rounded-lg p-4 border border-blue-200">
-                  <p className="text-gray-700 leading-relaxed whitespace-pre-line">
-                    {AGENT_INSIGHTS[selectedAgent.agent_id]?.coaching_recommendation}
-                  </p>
+                  {/* AI Coaching Recommendation */}
+                  <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg shadow-lg p-6 border-2 border-blue-200">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                      <span>🤖</span> AI-Generated Coaching Recommendation
+                    </h3>
+                    <div className="bg-white rounded-lg p-4 border border-blue-200">
+                      <p className="text-gray-700 leading-relaxed whitespace-pre-line">
+                        {insights.coaching_recommendation || 'No coaching recommendation available'}
+                      </p>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="bg-white rounded-lg shadow p-6 text-center">
+                  <p className="text-gray-500">No insights available for this agent</p>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </div>
