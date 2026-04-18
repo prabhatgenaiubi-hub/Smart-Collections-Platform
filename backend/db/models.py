@@ -167,13 +167,15 @@ class ChatSession(Base):
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
-    message_id   = Column(String, primary_key=True, default=gen_uuid)
-    session_id   = Column(String, ForeignKey("chat_sessions.session_id"), nullable=False)
-    role         = Column(String, nullable=False)   # user / assistant / system
-    message_text = Column(Text, nullable=False)
-    timestamp    = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    message_id        = Column(String, primary_key=True, default=gen_uuid)
+    session_id        = Column(String, ForeignKey("chat_sessions.session_id"), nullable=False)
+    role              = Column(String, nullable=False)   # user / assistant / system
+    message_text      = Column(Text, nullable=False)     # original script (native language)
+    english_text      = Column(Text, nullable=True)      # English translation (for LLM / search)
+    original_language = Column(String, nullable=True)    # detected language e.g. 'Hindi'
+    timestamp         = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    session      = relationship("ChatSession", back_populates="messages")
+    session           = relationship("ChatSession", back_populates="messages")
 
 
 # ─────────────────────────────────────────────
@@ -187,3 +189,160 @@ class BankOfficer(Base):
     email        = Column(String, nullable=False)
     password     = Column(String, nullable=False, default="officer123")
     department   = Column(String, default="Collections")
+
+
+# ─────────────────────────────────────────────
+# Call Sessions Table  (Co-Pilot Feature)
+# ─────────────────────────────────────────────
+class CallSession(Base):
+    __tablename__ = "call_sessions"
+
+    call_session_id   = Column(String, primary_key=True, default=gen_uuid)
+    customer_id       = Column(String, ForeignKey("customers.customer_id"), nullable=False)
+    loan_id           = Column(String, nullable=True)          # optional — specific loan
+    officer_id        = Column(String, nullable=True)          # officer who ran the analysis
+    upload_time       = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    transcript        = Column(Text, nullable=True)            # full transcribed text
+    language_detected = Column(String, default="English")      # detected language
+    status            = Column(String, default="completed")    # completed / failed
+
+    customer          = relationship("Customer", foreign_keys=[customer_id])
+    suggestion        = relationship("CopilotSuggestion", back_populates="call_session", uselist=False)
+
+
+# ─────────────────────────────────────────────
+# Copilot Suggestions Table  (Co-Pilot Feature)
+# ─────────────────────────────────────────────
+class CopilotSuggestion(Base):
+    __tablename__ = "copilot_suggestions"
+
+    suggestion_id       = Column(String, primary_key=True, default=gen_uuid)
+    call_session_id     = Column(String, ForeignKey("call_sessions.call_session_id"), nullable=False)
+    customer_id         = Column(String, nullable=False)
+    sentiment_score     = Column(Float, default=0.0)
+    tonality            = Column(String, default="Neutral")
+    suggested_responses = Column(Text, nullable=True)   # JSON list of strings
+    questions_to_ask    = Column(Text, nullable=True)   # JSON list of strings
+    nudges              = Column(Text, nullable=True)   # JSON list of strings
+    created_at          = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    call_session        = relationship("CallSession", back_populates="suggestion")
+
+
+# ─────────────────────────────────────────────
+# Agent Performance Table (Coaching & Performance Feature)
+# ─────────────────────────────────────────────
+class AgentPerformance(Base):
+    __tablename__ = "agent_performance"
+
+    performance_id    = Column(String, primary_key=True, default=gen_uuid)
+    officer_id        = Column(String, ForeignKey("bank_officers.officer_id"), nullable=False)
+    period_start      = Column(String, nullable=False)
+    period_end        = Column(String, nullable=False)
+    total_calls       = Column(Integer, default=0)
+    successful_calls  = Column(Integer, default=0)
+    success_rate      = Column(Float, default=0.0)
+    avg_sentiment     = Column(Float, default=0.0)
+    avg_call_duration = Column(Float, default=0.0)  # in seconds
+    first_call_resolution_rate = Column(Float, default=0.0)
+    escalation_count  = Column(Integer, default=0)
+    escalation_rate   = Column(Float, default=0.0)
+    positive_calls    = Column(Integer, default=0)
+    neutral_calls     = Column(Integer, default=0)
+    negative_calls    = Column(Integer, default=0)
+    angry_calls       = Column(Integer, default=0)
+    overall_score     = Column(Float, default=0.0)  # 0-10 scale
+    created_at        = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    officer           = relationship("BankOfficer", foreign_keys=[officer_id])
+
+
+# ─────────────────────────────────────────────
+# Call Summary Table (AI-Generated Call Analysis)
+# ─────────────────────────────────────────────
+class CallSummary(Base):
+    __tablename__ = "call_summaries"
+
+    summary_id        = Column(String, primary_key=True, default=gen_uuid)
+    call_session_id   = Column(String, ForeignKey("call_sessions.call_session_id"), nullable=False)
+    customer_id       = Column(String, ForeignKey("customers.customer_id"), nullable=False)
+    officer_id        = Column(String, ForeignKey("bank_officers.officer_id"), nullable=False)
+    call_date         = Column(String, nullable=False)
+    call_duration     = Column(Float, nullable=False)  # seconds
+    outcome           = Column(String, nullable=True)  # 'Payment Promise', 'Grace Request', 'Escalated', etc.
+    sentiment_start   = Column(Float, default=0.0)
+    sentiment_end     = Column(Float, default=0.0)
+    sentiment_trend   = Column(String, nullable=True)  # 'Improved', 'Declined', 'Stable'
+    tonality          = Column(String, nullable=True)
+    key_moments       = Column(Text, nullable=True)  # JSON: [{"time": "1:30", "event": "..."}]
+    strengths         = Column(Text, nullable=True)  # JSON array
+    improvements      = Column(Text, nullable=True)  # JSON array
+    coaching_tips     = Column(Text, nullable=True)  # JSON array
+    overall_score     = Column(Float, default=0.0)
+    created_at        = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    call_session      = relationship("CallSession", foreign_keys=[call_session_id])
+    customer          = relationship("Customer", foreign_keys=[customer_id])
+    officer           = relationship("BankOfficer", foreign_keys=[officer_id])
+
+
+# ─────────────────────────────────────────────
+# Coaching Feedback Table
+# ─────────────────────────────────────────────
+class CoachingFeedback(Base):
+    __tablename__ = "coaching_feedback"
+
+    feedback_id       = Column(String, primary_key=True, default=gen_uuid)
+    officer_id        = Column(String, ForeignKey("bank_officers.officer_id"), nullable=False)
+    supervisor_id     = Column(String, nullable=True)  # who provided feedback
+    feedback_type     = Column(String, nullable=False)  # 'Automated', 'Manual', 'Peer Review'
+    priority          = Column(String, default='Medium')  # 'High', 'Medium', 'Low'
+    issue_category    = Column(String, nullable=True)  # 'De-escalation', 'Product Knowledge', etc.
+    feedback_text     = Column(Text, nullable=False)
+    recommendations   = Column(Text, nullable=True)  # JSON array of action items
+    related_calls     = Column(Text, nullable=True)  # JSON array of call_session_ids
+    status            = Column(String, default='Pending')  # 'Pending', 'In Progress', 'Completed'
+    created_at        = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    reviewed_at       = Column(String, nullable=True)
+
+    officer           = relationship("BankOfficer", foreign_keys=[officer_id])
+
+
+# ─────────────────────────────────────────────
+# Coaching Sessions Table
+# ─────────────────────────────────────────────
+class CoachingSession(Base):
+    __tablename__ = "coaching_sessions"
+
+    session_id        = Column(String, primary_key=True, default=gen_uuid)
+    officer_id        = Column(String, ForeignKey("bank_officers.officer_id"), nullable=False)
+    supervisor_id     = Column(String, nullable=True)
+    session_type      = Column(String, nullable=True)  # '1-on-1', 'Group', 'Shadowing', 'Training Module'
+    topic             = Column(String, nullable=False)
+    scheduled_date    = Column(String, nullable=True)
+    completed_date    = Column(String, nullable=True)
+    duration_minutes  = Column(Integer, nullable=True)
+    notes             = Column(Text, nullable=True)
+    improvement_observed = Column(Integer, default=0)  # 0 = False, 1 = True (SQLite doesn't have boolean)
+    created_at        = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    officer           = relationship("BankOfficer", foreign_keys=[officer_id])
+
+
+# ─────────────────────────────────────────────
+# Success Patterns Table (Best Practices from Top Performers)
+# ─────────────────────────────────────────────
+class SuccessPattern(Base):
+    __tablename__ = "success_patterns"
+
+    pattern_id        = Column(String, primary_key=True, default=gen_uuid)
+    officer_id        = Column(String, ForeignKey("bank_officers.officer_id"), nullable=False)  # top performer
+    pattern_type      = Column(String, nullable=False)  # 'De-escalation', 'Grace Conversion', 'Empathy', etc.
+    description       = Column(Text, nullable=False)
+    key_phrases       = Column(Text, nullable=True)  # JSON array of effective phrases
+    timing_notes      = Column(Text, nullable=True)  # When to use this pattern
+    success_rate      = Column(Float, default=0.0)
+    sample_calls      = Column(Text, nullable=True)  # JSON array of call_session_ids
+    created_at        = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    officer           = relationship("BankOfficer", foreign_keys=[officer_id])

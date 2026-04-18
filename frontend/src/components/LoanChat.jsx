@@ -1,8 +1,27 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import api from '../api';
 
+// ── Language badge shown in header when a non-English language is detected ──
+const LANG_FLAGS = {
+  English: '🌐', Hindi: '🇮🇳', Tamil: '🇮🇳', Telugu: '🇮🇳',
+  Kannada: '🇮🇳', Malayalam: '🇮🇳', Marathi: '🇮🇳',
+  Gujarati: '🇮🇳', Bengali: '🇮🇳',
+};
+
+function LangBadge({ lang }) {
+  if (!lang || lang === 'auto') return null;
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-white/20 text-white border border-white/30">
+      {LANG_FLAGS[lang] ?? '🌐'} {lang}
+    </span>
+  );
+}
+
 export default function LoanChat({ loan, onClose }) {
   const bottomRef = useRef(null);
+  const inputRef  = useRef(null);
+  const chunksRef = useRef([]);
+  const mrRef     = useRef(null);
 
   const [view,         setView]         = useState('list');
   const [sessions,     setSessions]     = useState([]);
@@ -15,6 +34,14 @@ export default function LoanChat({ loan, onClose }) {
   const [loadingChat,  setLoadingChat]  = useState(false);
   const [creating,     setCreating]     = useState(false);
   const [error,        setError]        = useState('');
+
+  // Multilingual + voice state
+  const [detectedLanguage, setDetectedLanguage] = useState(null);  // Auto-detected language name
+  const [detectedLanguageCode, setDetectedLanguageCode] = useState(null);  // BCP-47 code for replies
+  const [recording,  setRecording]  = useState(false);
+  const [micLoading, setMicLoading] = useState(false);
+  const [micError,   setMicError]   = useState('');
+  const micSupported = !!(navigator.mediaDevices?.getUserMedia);
 
   const loadSessions = useCallback(() => {
     setLoadingList(true);
@@ -67,21 +94,47 @@ export default function LoanChat({ loan, onClose }) {
 
   const backToList = () => {
     setView('list'); setSessionId(null); setMessages([]);
-    setInput(''); setError('');
+    setInput(''); setError(''); setDetectedLanguage(null); setDetectedLanguageCode(null); setMicError('');
     loadSessions();
   };
 
-  const sendMessage = async () => {
-    const text = input.trim();
-    if (!text || !sessionId || sending) return;
+  // sendMessage(englishText, displayText, detectedLang, detectedCode, isVoice)
+  // - englishText: English text for LLM processing (optional, defaults to input)
+  // - displayText: Original language text for UI display (optional, defaults to englishText or input)
+  // - detectedLang: detected language name e.g. 'Hindi' (optional)
+  // - detectedCode: detected BCP-47 code e.g. 'hi-IN' (optional)
+  // - isVoice: true if from voice recording (already has English translation)
+  const sendMessage = useCallback(async (englishText, displayText, detectedLang, detectedCode, isVoice = false) => {
+    // For typed text: englishText = undefined, displayText = undefined, isVoice = false
+    // For voice text: englishText = English translation, displayText = native text, isVoice = true
+    const textForBackend = isVoice ? (englishText ?? input).trim() : (displayText ?? input).trim();
+    const textForDisplay = displayText || englishText || input;
+    const lang = detectedLang ?? detectedLanguage;
+    const langCode = detectedCode ?? detectedLanguageCode;
+    if (!textForBackend || !sessionId || sending) return;
     setInput(''); setSending(true); setError('');
-    setMessages(m => [...m, { role: 'user', message_text: text, timestamp: new Date().toISOString() }]);
+    
+    // Show original language text in UI
+    const userMsg = {
+      role: 'user',
+      message_text: textForDisplay.trim(),  // Show native language text (Hindi, Tamil, etc.)
+      timestamp: new Date().toISOString(),
+      isEnglishTranscript: isVoice, // true if from voice (shows "Transcribed Text" label)
+      originalLanguage: lang,
+    };
+    setMessages(m => [...m, userMsg]);
     try {
       const r = await api.post(`/chat/sessions/${sessionId}/message`, {
-        message: text,
-        loan_id: loan.loan_id,
+        message:           textForBackend,  // English for voice, native for typed
+        loan_id:           loan.loan_id,
+        ...(langCode && { language_code: langCode }),  // BCP-47 code for response translation
       });
-      setMessages(m => [...m, r.data.ai_response]);
+      // Response includes: ai_response, detected_language, analysis
+      const aiMsg = { ...r.data.ai_response };
+      if (r.data.analysis) {
+        aiMsg.analysis = r.data.analysis;  // Attach analysis to the message
+      }
+      setMessages(m => [...m, aiMsg]);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to send message.');
       setMessages(m => [...m, {
@@ -90,10 +143,101 @@ export default function LoanChat({ loan, onClose }) {
         timestamp: new Date().toISOString(),
       }]);
     } finally { setSending(false); }
-  };
+  }, [input, sessionId, sending, loan.loan_id, detectedLanguage, detectedLanguageCode]);
 
   const handleKey = e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  };
+
+  // ── Voice recording ────────────────────────────────────────────
+  // Pick the best supported MIME for the browser (opus is best for Saaras)
+  const _getBestMime = () => {
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/mp4',
+    ];
+    return candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
+  };
+
+  // BCP-47 hint map — tells Saaras which language to expect
+  const _LANG_TO_BCP47 = {
+    Hindi: 'hi-IN', Tamil: 'ta-IN', Telugu: 'te-IN',
+    Kannada: 'kn-IN', Malayalam: 'ml-IN', Marathi: 'mr-IN',
+    Gujarati: 'gu-IN', Bengali: 'bn-IN', Punjabi: 'pa-IN',
+    Odia: 'od-IN',
+  };
+
+  const startRecording = async () => {
+    if (!micSupported) { setMicError('Microphone not supported in this browser.'); return; }
+    setMicError('');
+    try {
+      chunksRef.current = [];
+      const stream  = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = _getBestMime();
+      const mr = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      mrRef.current = mr;
+      mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setMicLoading(true);
+        try {
+          // Use the actual recorded MIME (may differ from requested)
+          const actualMime = mr.mimeType || mimeType || 'audio/webm';
+          const ext        = actualMime.includes('ogg') ? 'ogg'
+                           : actualMime.includes('mp4') ? 'mp4'
+                           : 'webm';
+          const blob = new Blob(chunksRef.current, { type: actualMime });
+          const fd   = new FormData();
+          fd.append('audio_file', blob, `voice.${ext}`);
+
+          // Sarvam auto-detects language from voice - no hint needed
+          const resp = await api.post('/customer/self-cure/transcribe', fd, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          });
+
+          console.log('[Voice] Transcription response:', resp.data);
+
+          // transcribe now returns:
+          //   transcript         — English text (for LLM processing)
+          //   native_transcript  — Original language text (for UI display)
+          //   detected_language  — display name ('Hindi', 'Tamil', etc.)
+          //   language_code      — BCP-47 code ('hi-IN', etc.)
+          const { transcript, native_transcript, detected_language: detectedLang, language_code } = resp.data;
+
+          // Store detected language for automatic reply translation
+          if (detectedLang) setDetectedLanguage(detectedLang);
+          if (language_code) setDetectedLanguageCode(language_code);
+
+          if (transcript && transcript.trim()) {
+            // For VOICE: Send English transcript to backend, but display native text in UI
+            // native_transcript = Hindi/Tamil (for display)
+            // transcript = English (for backend/LLM)
+            const displayText = native_transcript || transcript;
+            await sendMessage(transcript.trim(), displayText, detectedLang, language_code, true);  // isVoice=true
+          } else {
+            setMicError('Could not transcribe audio. Please try speaking clearly.');
+          }
+        } catch (err) {
+          console.error('[Voice] Transcription error:', err);
+          console.error('[Voice] Error response:', err.response?.data);
+          setMicError('Transcription failed. Please try again.');
+        } finally {
+          setMicLoading(false);
+        }
+      };
+      mr.start(250); // collect chunks every 250ms for better reliability
+      setRecording(true);
+    } catch {
+      setMicError('Microphone access denied. Please allow microphone access.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mrRef.current && recording) { mrRef.current.stop(); setRecording(false); }
   };
 
   useEffect(() => {
@@ -117,9 +261,12 @@ export default function LoanChat({ loan, onClose }) {
               </button>
             )}
             <div className="min-w-0">
-              <p className="font-bold text-base truncate">
-                💬 {view === 'list' ? 'Loan Chat' : (sessionTitle || 'Chat')}
-              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="font-bold text-base truncate">
+                  💬 {view === 'list' ? 'Loan Chat' : (sessionTitle || 'Chat')}
+                </p>
+                <LangBadge lang={detectedLanguage} />
+              </div>
               <p className="text-xs text-blue-100 mt-0.5 truncate">
                 {loan.loan_id} · {loan.loan_type} · ₹{loan.outstanding_balance?.toLocaleString('en-IN')} outstanding
               </p>
@@ -152,6 +299,21 @@ export default function LoanChat({ loan, onClose }) {
           </div>
         )}
 
+        {/* Multilingual info strip — shown only in chat view */}
+        {view === 'chat' && (
+          <div className="px-4 py-1.5 bg-blue-50 border-b border-blue-100 flex items-center gap-2 flex-shrink-0">
+            <span className="text-[11px] text-blue-600 font-medium">
+              🌐 {detectedLanguage ? `Speaking: ${detectedLanguage}` : 'Auto-detect enabled'}
+            </span>
+            <span className="text-[11px] text-gray-400">· Responses in your language</span>
+            {micSupported && (
+              <span className="ml-auto text-[11px] text-gray-400 flex items-center gap-1">
+                🎤 Voice enabled
+              </span>
+            )}
+          </div>
+        )}
+
         {/* SESSION LIST VIEW */}
         {view === 'list' && (
           <div className="flex-1 overflow-y-auto">
@@ -165,6 +327,7 @@ export default function LoanChat({ loan, onClose }) {
                 <p className="text-gray-800 font-semibold text-base mb-1">No chats yet for this loan</p>
                 <p className="text-sm text-gray-400 mb-6">
                   Start a conversation to get help with EMIs, grace periods, restructuring options, and more.
+                  Ask in Hindi, Tamil, Telugu, Kannada, Malayalam, or any Indian language.
                 </p>
                 <button
                   onClick={createSession}
@@ -223,29 +386,68 @@ export default function LoanChat({ loan, onClose }) {
               )}
 
               {!loadingChat && messages.length === 0 && (
-                <div className="text-center text-gray-400 text-sm mt-10">
-                  <p className="text-3xl mb-2">🤖</p>
-                  <p>Ask anything about this loan — EMIs, grace periods, restructuring, and more.</p>
+                <div className="text-center text-gray-400 text-sm mt-10 px-4">
+                  <p className="text-3xl mb-3">🤖</p>
+                  <p className="font-medium text-gray-600 mb-1">Multilingual AI Banking Assistant</p>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    Ask about EMIs, grace periods, restructuring, and more.<br />
+                    You can type or speak in Hindi, Tamil, Telugu, Kannada, Malayalam, and other Indian languages.
+                  </p>
                 </div>
               )}
 
               {!loadingChat && messages.map((msg, idx) => {
                 const isUser = msg.role === 'user';
+                const isAssistant = msg.role === 'assistant';
                 return (
-                  <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
-                      isUser
-                        ? 'bg-blue-600 text-white rounded-br-none'
-                        : msg.role === 'assistant'
-                        ? 'bg-white text-gray-800 rounded-bl-none border border-gray-100'
-                        : 'bg-yellow-50 text-gray-500 text-xs italic rounded-xl w-full text-center'
-                    }`}>
-                      {msg.role === 'system' && <span className="font-medium">System: </span>}
-                      <p className="whitespace-pre-wrap">{msg.message_text}</p>
-                      <p className={`text-[10px] mt-1 ${isUser ? 'text-blue-200' : 'text-gray-400'}`}>
-                        {msg.timestamp?.slice(11, 16)}
-                      </p>
+                  <div key={idx} className="space-y-1.5">
+                    {/* Transcription label for voice messages */}
+                    {isUser && msg.isEnglishTranscript && (
+                      <div className="flex justify-end">
+                        <span className="text-[10px] text-gray-400 px-2">
+                          📝 Transcribed Text ({msg.originalLanguage || 'English'})
+                        </span>
+                      </div>
+                    )}
+                    
+                    {/* Message bubble */}
+                    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
+                        isUser
+                          ? 'bg-blue-600 text-white rounded-br-none'
+                          : isAssistant
+                          ? 'bg-white text-gray-800 rounded-bl-none border border-gray-100'
+                          : 'bg-yellow-50 text-gray-500 text-xs italic rounded-xl w-full text-center'
+                      }`}>
+                        {msg.role === 'system' && <span className="font-medium">System: </span>}
+                        <p className="whitespace-pre-wrap">{msg.message_text}</p>
+                        <p className={`text-[10px] mt-1 ${isUser ? 'text-blue-200' : 'text-gray-400'}`}>
+                          {msg.timestamp?.slice(11, 16)}
+                        </p>
+                      </div>
                     </div>
+
+                    {/* Analysis section for assistant messages */}
+                    {isAssistant && msg.analysis && (
+                      <div className="flex justify-start">
+                        <div className="max-w-[85%] bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-[11px] text-gray-600 space-y-0.5">
+                          <p className="font-semibold text-gray-700 mb-1">🧠 Analysis</p>
+                          <p><span className="font-medium">Intent:</span> {msg.analysis.intent}</p>
+                          <p><span className="font-medium">Sentiment:</span> {
+                            msg.analysis.sentiment === 'calm' ? '😌 Calm' :
+                            msg.analysis.sentiment === 'frustrated' ? '😤 Frustrated' :
+                            msg.analysis.sentiment === 'angry' ? '😡 Angry' :
+                            msg.analysis.sentiment === 'distressed' ? '😰 Distressed' :
+                            msg.analysis.sentiment
+                          }</p>
+                          <p><span className="font-medium">Escalation Required:</span> {
+                            msg.analysis.escalation_required
+                              ? '🚨 Yes'
+                              : '✅ No'
+                          }</p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -261,24 +463,61 @@ export default function LoanChat({ loan, onClose }) {
                   </div>
                 </div>
               )}
+              {micLoading && (
+                <div className="flex justify-center my-1">
+                  <span className="text-xs text-blue-500 flex items-center gap-1.5">
+                    <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                    Transcribing voice…
+                  </span>
+                </div>
+              )}
               <div ref={bottomRef} />
             </div>
 
+            {/* Mic error strip */}
+            {micError && (
+              <div className="px-4 py-1.5 bg-red-50 border-t border-red-100 text-xs text-red-500 flex items-center gap-1 flex-shrink-0">
+                ⚠️ {micError}
+                <button onClick={() => setMicError('')} className="ml-auto text-gray-400 hover:text-gray-600">✕</button>
+              </div>
+            )}
+
             <div className="px-4 py-3 border-t border-gray-100 bg-white flex gap-2 items-end flex-shrink-0">
               <textarea
+                ref={inputRef}
                 rows={1}
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKey}
-                placeholder="Ask about this loan…"
-                disabled={loadingChat || sending}
+                placeholder="Ask about this loan… (any language)"
+                disabled={loadingChat || sending || recording || micLoading}
                 className="flex-1 resize-none border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 max-h-32 overflow-y-auto"
                 style={{ lineHeight: '1.5' }}
               />
+
+              {/* Voice mic button */}
+              {micSupported && (
+                <button
+                  type="button"
+                  onClick={recording ? stopRecording : startRecording}
+                  disabled={sending || micLoading || loadingChat}
+                  title={recording ? 'Stop recording' : 'Voice input — speak in any language'}
+                  className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition text-sm disabled:cursor-not-allowed ${
+                    recording
+                      ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse'
+                      : 'bg-gray-100 hover:bg-gray-200 text-gray-600 disabled:text-gray-300'
+                  }`}
+                >
+                  {micLoading
+                    ? <span className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                    : recording ? '⏹' : '🎤'}
+                </button>
+              )}
+
               <button
-                onClick={sendMessage}
-                disabled={!input.trim() || loadingChat || sending}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors flex-shrink-0"
+                onClick={() => sendMessage()}
+                disabled={!input.trim() || loadingChat || sending || recording || micLoading}
+                className="flex-shrink-0 w-10 h-10 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white flex items-center justify-center text-sm font-semibold transition-colors"
               >
                 {sending ? '…' : '↑'}
               </button>

@@ -19,6 +19,7 @@ export default function OfficerLayout() {
     { to: '/officer/sentiment',        label: '🧠 Sentiment Analysis' },
     { to: '/officer/chat',             label: '💬 AI Chat Assistant' },
     { to: '/officer/digital-outreach', label: '📡 Digital Outreach' },
+    { to: '/officer/agent-coaching',   label: '🎓 Agent Performance & Coaching' },
   ];
 
   return (

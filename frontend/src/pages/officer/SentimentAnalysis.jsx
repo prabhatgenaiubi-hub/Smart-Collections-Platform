@@ -449,9 +449,17 @@ function CallAnalyzerCard({ customers, onAnalyzed }) {
   const [recSeconds,   setRecSeconds]   = useState(0);
   const [micSupported, setMicSupported] = useState(true);
 
+  // ── Co-Pilot state ────────────────────────────────────────────
+  const [copilotResult,  setCopilotResult]  = useState(null);
+  const [copilotLoading, setCopilotLoading] = useState(false);
+  const [copilotError,   setCopilotError]   = useState('');
+  const [copiedIdx,      setCopiedIdx]      = useState(null);
+  const [copiedAll,      setCopiedAll]      = useState(false);
+
   const switchTab = t => {
     setTab(t); setResult(null); setError(''); setFile(null);
     setRecordedBlob(null); setRecordedUrl(''); setRecSeconds(0);
+    setCopilotResult(null); setCopilotError(''); setCopiedIdx(null); setCopiedAll(false);
   };
 
   const startRecording = useCallback(async () => {
@@ -497,17 +505,41 @@ function CallAnalyzerCard({ customers, onAnalyzed }) {
       return;
     }
     setError(''); setResult(null); setLoading(true);
+    setCopilotResult(null); setCopilotError(''); setCopiedIdx(null); setCopiedAll(false);
+
+    const audioFile = tab === 'upload' ? file : new File([recordedBlob], 'recording.webm', { type: 'audio/webm' });
+
+    // ── 1. Existing sentiment analysis ────────────────────────────
     const fd = new FormData();
     fd.append('customer_id', customerId);
-    fd.append('audio_file', tab === 'upload' ? file : new File([recordedBlob], 'recording.webm', { type: 'audio/webm' }));
+    fd.append('audio_file', audioFile);
     try {
       const r = await api.post('/officer/sentiment/analyze-call', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
       setResult(r.data);
       if (onAnalyzed) onAnalyzed();
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to analyze call.');
+      setLoading(false);
+      return;
     } finally {
       setLoading(false);
+    }
+
+    // ── 2. Co-Pilot analysis (same audio, parallel-ish) ───────────
+    setCopilotLoading(true);
+    const fd2 = new FormData();
+    fd2.append('customer_id', customerId);
+    fd2.append('audio_file', audioFile);
+    try {
+      const cp = await api.post('/officer/copilot/upload-call', fd2, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000,
+      });
+      setCopilotResult(cp.data);
+    } catch (err) {
+      setCopilotError(err.response?.data?.detail || 'Co-Pilot suggestions unavailable.');
+    } finally {
+      setCopilotLoading(false);
     }
   };
 
@@ -623,6 +655,8 @@ function CallAnalyzerCard({ customers, onAnalyzed }) {
 
       {result && (
         <div className="mt-6 space-y-4">
+
+          {/* ── Sentiment result ── */}
           <div className={`rounded-xl p-4 ${tonalityBg(result.tonality)}`}>
             <div className="flex items-center justify-between mb-2">
               <span className="font-bold text-base">{tonalityEmoji(result.tonality)} {result.tonality} Sentiment</span>
@@ -631,11 +665,151 @@ function CallAnalyzerCard({ customers, onAnalyzed }) {
             <p className="text-sm">{result.interaction_summary}</p>
             {scoreBar(result.sentiment_score)}
           </div>
-          <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">📝 Transcript</p>
-            <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{result.transcript}</p>
-          </div>
+
+          {/* ── Transcript ── */}
+          {result.language_detected && result.language_detected !== 'English' && result.transcript_original && result.transcript_original !== result.transcript_english ? (
+            <div className="space-y-3">
+              {/* Original language transcript */}
+              <div className="bg-amber-50 rounded-xl p-4 border border-amber-200">
+                <div className="flex items-center gap-2 mb-2">
+                  <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">📝 Original Transcript</p>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 font-medium">
+                    🇮🇳 {result.language_detected}
+                  </span>
+                </div>
+                <p className="text-sm text-amber-900 leading-relaxed whitespace-pre-wrap">{result.transcript_original}</p>
+              </div>
+              {/* English translation */}
+              <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                <div className="flex items-center gap-2 mb-2">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">📝 Translated Transcript</p>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 font-medium">
+                    🌐 English (auto-translated)
+                  </span>
+                </div>
+                <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{result.transcript_english || result.transcript}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">📝 Transcript</p>
+              <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{result.transcript}</p>
+            </div>
+          )}
+
           <p className="text-xs text-gray-400 text-right">Saved to interaction history · Customer: {result.customer_name}</p>
+
+          {/* ══════════════════════════════════════════════════════
+              CO-PILOT PANEL
+              ══════════════════════════════════════════════════════ */}
+          <div className="border-t-2 border-dashed border-indigo-200 pt-4">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-base font-bold text-indigo-700">🎯 Co-Pilot Suggestions</span>
+              {copilotLoading && (
+                <span className="flex items-center gap-1.5 text-xs text-indigo-500 ml-1">
+                  <span className="inline-block w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                  Generating…
+                </span>
+              )}
+              {copilotResult && !copilotLoading && (
+                <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-600 font-medium border border-indigo-200">
+                  🌐 {copilotResult.language_detected}
+                </span>
+              )}
+            </div>
+
+            {copilotError && (
+              <div className="bg-red-50 border border-red-200 text-red-600 text-xs rounded-xl px-3 py-2">
+                ⚠️ {copilotError}
+              </div>
+            )}
+
+            {copilotLoading && !copilotResult && (
+              <div className="bg-indigo-50 rounded-xl p-5 text-center border border-indigo-100">
+                <div className="flex flex-col items-center gap-2 text-indigo-500">
+                  <span className="inline-block w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs">Running Co-Pilot analysis — may take up to 60 s…</p>
+                </div>
+              </div>
+            )}
+
+            {copilotResult && (
+              <div className="space-y-4">
+
+                {/* Suggested Responses */}
+                <div className="bg-white rounded-xl border border-indigo-100 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">💬 Suggested Responses</p>
+                    <button
+                      onClick={() => {
+                        const text = (copilotResult.suggested_responses ?? []).map((r, i) => `${i + 1}. ${r}`).join('\n');
+                        navigator.clipboard.writeText(text).then(() => { setCopiedAll(true); setTimeout(() => setCopiedAll(false), 2000); });
+                      }}
+                      className="text-[10px] px-2 py-0.5 rounded border border-indigo-200 text-indigo-500 hover:bg-indigo-50 transition"
+                    >
+                      {copiedAll ? '✅ Copied' : '📋 Copy All'}
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {(copilotResult.suggested_responses ?? []).map((resp, idx) => (
+                      <div key={idx} className="flex items-start gap-2 bg-indigo-50 rounded-lg px-3 py-2.5 border border-indigo-100">
+                        <span className="flex-shrink-0 w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] font-bold flex items-center justify-center mt-0.5">{idx + 1}</span>
+                        <p className="flex-1 text-xs text-gray-700 leading-relaxed">{resp}</p>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(resp).then(() => { setCopiedIdx(idx); setTimeout(() => setCopiedIdx(null), 2000); })}
+                          className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-indigo-200 text-indigo-400 hover:bg-indigo-100 transition"
+                        >
+                          {copiedIdx === idx ? '✅' : '📋'}
+                        </button>
+                      </div>
+                    ))}
+                    {(!copilotResult.suggested_responses || copilotResult.suggested_responses.length === 0) && (
+                      <p className="text-xs text-gray-400 italic">No suggestions generated.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Questions + Nudges (two columns) */}
+                <div className="grid grid-cols-1 gap-3">
+
+                  {/* Root-Cause Questions */}
+                  <div className="bg-white rounded-xl border border-indigo-100 p-4">
+                    <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">❓ Root-Cause Questions</p>
+                    <ol className="space-y-1.5">
+                      {(copilotResult.questions_to_ask ?? []).map((q, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs text-gray-700">
+                          <span className="text-indigo-400 font-bold flex-shrink-0 mt-0.5">{i + 1}.</span>
+                          <span>{q}</span>
+                        </li>
+                      ))}
+                      {(!copilotResult.questions_to_ask || copilotResult.questions_to_ask.length === 0) && (
+                        <li className="text-xs text-gray-400 italic">No questions generated.</li>
+                      )}
+                    </ol>
+                  </div>
+
+                  {/* Nudges & Alerts */}
+                  <div className="bg-orange-50 rounded-xl border border-orange-100 p-4">
+                    <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">🔔 Nudges &amp; Alerts</p>
+                    <ul className="space-y-1.5">
+                      {(copilotResult.nudges ?? []).map((n, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs text-gray-700">
+                          <span className="text-orange-400 flex-shrink-0 mt-0.5">●</span>
+                          <span>{n}</span>
+                        </li>
+                      ))}
+                      {(!copilotResult.nudges || copilotResult.nudges.length === 0) && (
+                        <li className="text-xs text-gray-400 italic">No nudges generated.</li>
+                      )}
+                    </ul>
+                  </div>
+
+                </div>
+              </div>
+            )}
+          </div>
+          {/* end co-pilot panel */}
+
         </div>
       )}
     </div>

@@ -36,8 +36,71 @@ class NewSessionRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    message:  str
-    loan_id:  Optional[str] = None     # optional loan context
+    message:       str             # English text (from Saaras or typed)
+    loan_id:       Optional[str] = None
+    language_code: Optional[str] = None   # BCP-47 code from Sarvam STT: 'hi-IN', 'ta-IN', etc. (for response translation)
+
+
+# ─────────────────────────────────────────────
+# Sarvam language helpers
+# ─────────────────────────────────────────────
+
+# Maps display-name (from STT response) → BCP-47 code (for Mayura API)
+_DISPLAY_TO_BCP47 = {
+    "Hindi":     "hi-IN",
+    "Tamil":     "ta-IN",
+    "Telugu":    "te-IN",
+    "Kannada":   "kn-IN",
+    "Malayalam": "ml-IN",
+    "Marathi":   "mr-IN",
+    "Gujarati":  "gu-IN",
+    "Bengali":   "bn-IN",
+    "Punjabi":   "pa-IN",
+    "Odia":      "od-IN",
+}
+
+# Reverse mapping: BCP-47 code → display name
+_BCP47_TO_DISPLAY = {v: k for k, v in _DISPLAY_TO_BCP47.items()}
+
+
+async def _translate_mayura(text: str, src: str, tgt: str) -> str:
+    """
+    Translate *text* from BCP-47 *src* to BCP-47 *tgt* using Sarvam Mayura.
+    Returns the original text unchanged if translation fails.
+    """
+    import httpx
+    import os
+    api_key = os.getenv("SARVAM_API_KEY", "")
+    if not api_key or not text.strip():
+        return text
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                "https://api.sarvam.ai/translate",
+                headers={
+                    "api-subscription-key": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "input":                 text,
+                    "source_language_code":  src,
+                    "target_language_code":  tgt,
+                    "speaker_gender":        "Male",
+                    "mode":                  "formal",
+                    "model":                 "mayura:v1",
+                    "enable_preprocessing":  True,
+                },
+            )
+        if resp.status_code == 200:
+            translated = resp.json().get("translated_text", "").strip()
+            if translated:
+                print(f"[Mayura] {src}→{tgt} OK (len={len(translated)})")
+                return translated
+        else:
+            print(f"[Mayura] HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as exc:
+        print(f"[Mayura] Translation error: {exc}")
+    return text
 
 
 # ─────────────────────────────────────────────
@@ -65,6 +128,102 @@ def format_session(session: ChatSession, db: Session) -> dict:
         "message_count": message_count,
         "last_message":  last_msg.message_text[:80] + "..." if last_msg and len(last_msg.message_text) > 80 else (last_msg.message_text if last_msg else None),
     }
+
+
+# ─────────────────────────────────────────────
+# Intent Classification
+# ─────────────────────────────────────────────
+
+def _classify_intent(message: str) -> str:
+    """
+    Classify user intent from English message text.
+    Returns intent category for analytics display.
+    """
+    msg = message.lower()
+    
+    # EMI queries
+    if any(kw in msg for kw in ["emi", "installment", "monthly payment", "next payment", "due date", "pending emi"]):
+        return "LOAN_EMI_QUERY"
+    
+    # Balance queries
+    if any(kw in msg for kw in ["balance", "outstanding", "total due", "how much", "loan amount"]):
+        return "LOAN_BALANCE_QUERY"
+    
+    # Grace period
+    if any(kw in msg for kw in ["grace", "extension", "postpone", "delay payment"]):
+        return "GRACE_PERIOD_QUERY"
+    
+    # Restructure
+    if any(kw in msg for kw in ["restructure", "reschedule", "modify loan", "change emi", "reduce emi"]):
+        return "RESTRUCTURE_QUERY"
+    
+    # Payment assistance
+    if any(kw in msg for kw in ["pay", "payment", "make payment", "how to pay"]):
+        return "PAYMENT_ASSISTANCE"
+    
+    # Complaints/Issues
+    if any(kw in msg for kw in ["problem", "issue", "complaint", "not working", "error"]):
+        return "COMPLAINT"
+    
+    # General queries
+    return "GENERAL_QUERY"
+
+
+# ─────────────────────────────────────────────
+# Sentiment Analysis
+# ─────────────────────────────────────────────
+
+def _analyze_sentiment(message: str) -> str:
+    """
+    Analyze sentiment from English message text.
+    Returns: 'calm', 'frustrated', 'angry', 'distressed'
+    """
+    msg = message.lower()
+    
+    # Angry indicators
+    angry_keywords = ["furious", "ridiculous", "disgusting", "pathetic", "worst", "hate", 
+                      "terrible", "horrible", "unacceptable", "scam", "fraud"]
+    if any(kw in msg for kw in angry_keywords):
+        return "angry"
+    
+    # Distressed indicators
+    distressed_keywords = ["desperate", "help me", "urgent", "emergency", "please", 
+                           "worried", "can't afford", "losing", "bankruptcy"]
+    if any(kw in msg for kw in distressed_keywords):
+        return "distressed"
+    
+    # Frustrated indicators
+    frustrated_keywords = ["frustrated", "annoying", "still waiting", "again", "repeatedly",
+                           "not working", "confused", "difficult", "complicated"]
+    if any(kw in msg for kw in frustrated_keywords):
+        return "frustrated"
+    
+    # Calm (default)
+    return "calm"
+
+
+# ─────────────────────────────────────────────
+# Escalation Flag
+# ─────────────────────────────────────────────
+
+def _check_escalation(sentiment: str, message: str) -> bool:
+    """
+    Determine if the conversation needs human escalation.
+    Returns True if:
+      - Sentiment is angry or distressed
+      - Contains escalation keywords (complaint, cancel, talk to manager)
+    """
+    if sentiment in ["angry", "distressed"]:
+        return True
+    
+    msg = message.lower()
+    escalation_keywords = ["speak to manager", "talk to someone", "human", "real person",
+                           "cancel", "complaint", "escalate", "supervisor", "lawyer", "legal"]
+    
+    if any(kw in msg for kw in escalation_keywords):
+        return True
+    
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -206,7 +365,7 @@ def get_chat_session(
 # ─────────────────────────────────────────────
 
 @router.post("/sessions/{session_id}/message")
-def send_message(
+async def send_message(
     session_id:   str,
     body:         SendMessageRequest,
     current_user: dict    = Depends(get_current_customer),
@@ -215,17 +374,18 @@ def send_message(
     """
     Customer sends a message in a chat session.
 
-    Pipeline:
-      1. Save user message to SQL
-      2. Run LangGraph chat workflow (context + LLM reasoning)
-      3. Save AI response to SQL
-      4. Store interaction summary in Chroma Vector DB
-      5. Return AI response
-
-    The LLM uses:
-      - Recent chat history
-      - Customer profile + loan data
-      - Semantic vector memory
+    NEW ARCHITECTURE:
+      - Message is ALWAYS English (from Saaras STT with target_language_code or typed)
+      - Language field indicates detected language for response translation
+      - Pipeline:
+        1. Classify intent (LOAN_EMI_QUERY, LOAN_BALANCE_QUERY, etc.)
+        2. Analyze sentiment (calm, frustrated, angry, distressed)
+        3. Determine escalation flag (True if needs human support)
+        4. Save user message to SQL (English text)
+        5. Run LangGraph chat workflow (English reasoning)
+        6. Translate AI response to user's language (if not English)
+        7. Save AI response to SQL
+        8. Return: {ai_response, detected_language, analysis}
     """
     customer_id = current_user["user_id"]
 
@@ -243,18 +403,69 @@ def send_message(
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ── Save user message ─────────────────────────────────────────
+    # ── Extract and process user message ──────────────────────────
+    user_text       = body.message.strip()
+    user_lang_code  = (body.language_code or "en-IN").strip()  # BCP-47 code from frontend
+    user_language   = _BCP47_TO_DISPLAY.get(user_lang_code, "English")  # Convert to display name
+    needs_translation = not user_lang_code.startswith("en")
+    
+    print(f"[Chat] User language: {user_language} ({user_lang_code}), needs_translation: {needs_translation}")
+    
+    # ── Detect if message is in native script (not English) ───────
+    # Check for Indian scripts: Devanagari, Tamil, Telugu, etc.
+    import re
+    has_devanagari = bool(re.search(r'[\u0900-\u097F]', user_text))  # Hindi, Marathi
+    has_bengali    = bool(re.search(r'[\u0980-\u09FF]', user_text))  # Bengali
+    has_tamil      = bool(re.search(r'[\u0B80-\u0BFF]', user_text))  # Tamil
+    has_telugu     = bool(re.search(r'[\u0C00-\u0C7F]', user_text))  # Telugu
+    has_kannada    = bool(re.search(r'[\u0C80-\u0CFF]', user_text))  # Kannada
+    has_malayalam  = bool(re.search(r'[\u0D00-\u0D7F]', user_text))  # Malayalam
+    has_gujarati   = bool(re.search(r'[\u0A80-\u0AFF]', user_text))  # Gujarati
+    has_punjabi    = bool(re.search(r'[\u0A00-\u0A7F]', user_text))  # Punjabi (Gurmukhi)
+    
+    is_native_script = (has_devanagari or has_bengali or has_tamil or has_telugu or 
+                        has_kannada or has_malayalam or has_gujarati or has_punjabi)
+    
+    # ── Translate native text to English if needed ────────────────
+    message_english = user_text  # Default: assume English
+    if is_native_script and needs_translation:
+        print(f"[Chat] Detected native script in typed message, translating to English...")
+        try:
+            translated = await _translate_mayura(user_text, user_lang_code, "en-IN")
+            if translated and translated != user_text:
+                message_english = translated
+                print(f"[Chat] Translated: '{message_english[:60]}'")
+            else:
+                print(f"[Chat] Translation failed or unchanged, using original text")
+        except Exception as e:
+            print(f"[Chat] Translation error: {e}, using original text")
+    
+    print(f"[Chat] Message for LLM: '{message_english[:60]}'")
+
+
+    # ── Intent Classification ────────────────────────────────────
+    intent = _classify_intent(message_english)
+
+    # ── Sentiment Analysis ────────────────────────────────────────
+    sentiment = _analyze_sentiment(message_english)
+
+    # ── Escalation Flag ───────────────────────────────────────────
+    escalation_required = _check_escalation(sentiment, message_english)
+
+    # ── Save user message (original text + English translation) ──
     user_msg = ChatMessage(
-        session_id   = session_id,
-        role         = "user",
-        message_text = body.message.strip(),
-        timestamp    = now,
+        session_id        = session_id,
+        role              = "user",
+        message_text      = user_text,                   # Original text (native or English)
+        english_text      = message_english,             # English translation (for LLM processing)
+        original_language = user_language or "English",  # detected language name
+        timestamp         = now,
     )
     db.add(user_msg)
     db.commit()
 
-    # ── Greeting intercept — bypass LLM for hi/hello ──────────────
-    _msg_stripped = body.message.strip().lower()
+    # ── Greeting intercept ────────────────────────────────────────
+    _msg_stripped = message_english.lower()
     _GREET_EXACT  = {"hi", "hello", "hey", "hii", "helo", "helo!", "hi!", "hello!", "hey!",
                      "good morning", "good afternoon", "good evening"}
     _is_greeting  = (_msg_stripped in _GREET_EXACT or
@@ -295,7 +506,7 @@ def send_message(
                 db          = db,
                 customer_id = customer_id,
                 session_id  = session_id,
-                user_query  = body.message.strip(),
+                user_query  = message_english,
                 loan_id     = body.loan_id,
             )
             ai_response = result.get("llm_response", "")
@@ -304,14 +515,22 @@ def send_message(
 
         # ── Fallback response if workflow fails ───────────────────
         if not ai_response:
-            ai_response = _fallback_response(body.message, db, customer_id, session_id)
+            ai_response = _fallback_response(message_english, db, customer_id, session_id)
 
-    # ── Save assistant response ───────────────────────────────────
+    # ── Translate AI response back to user's language ─────────────
+    ai_response_english = ai_response   # keep English copy for storage
+    if needs_translation and ai_response:
+        ai_response = await _translate_mayura(ai_response, "en-IN", user_lang_code)
+        print(f"[ChatRouter] Response translated to {user_language}: {ai_response[:80]}")
+
+    # ── Save assistant response (native + English + language) ─────
     assistant_msg = ChatMessage(
-        session_id   = session_id,
-        role         = "assistant",
-        message_text = ai_response,
-        timestamp    = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        session_id        = session_id,
+        role              = "assistant",
+        message_text      = ai_response,                  # native language reply (shown in UI)
+        english_text      = ai_response_english,          # English version (stored for audit)
+        original_language = user_language or None,        # language context of this exchange
+        timestamp         = datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
     db.add(assistant_msg)
 
@@ -320,7 +539,8 @@ def send_message(
 
     # ── Auto-update session title from first user message ─────────
     if session.session_title == "New Chat":
-        title = body.message.strip()[:50]
+        # Use English message for title so it's readable in the sidebar
+        title = message_english[:50]
         session.session_title = title
 
     db.commit()
@@ -404,7 +624,7 @@ def send_message(
         from backend.vector.chroma_store import store_memory
         store_memory(
             customer_id = customer_id,
-            summary     = f"User asked: {body.message.strip()[:100]}. Assistant replied: {ai_response[:100]}",
+            summary     = f"User asked: {message_english[:100]}. Assistant replied: {ai_response[:100]}",
             metadata    = {
                 "session_id": session_id,
                 "timestamp":  now,
@@ -415,18 +635,24 @@ def send_message(
         print(f"[ChatRouter] Vector store failed (non-critical): {e}")
 
     return {
-        "success":       True,
-        "session_id":    session_id,
+        "success":           True,
+        "session_id":        session_id,
+        "detected_language": user_language if user_language else "English",
         "user_message": {
             "role":         "user",
-            "message_text": body.message.strip(),
+            "message_text": user_text,        # Original text (what user actually typed/said)
             "timestamp":    now,
         },
         "ai_response": {
             "message_id":   assistant_msg.message_id,
             "role":         "assistant",
-            "message_text": ai_response,
+            "message_text": ai_response,      # Translated to user's language (or English)
             "timestamp":    assistant_msg.timestamp,
+        },
+        "analysis": {
+            "intent":              intent,
+            "sentiment":           sentiment,
+            "escalation_required": escalation_required,
         },
     }
 
