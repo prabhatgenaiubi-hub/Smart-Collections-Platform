@@ -36,9 +36,9 @@ class NewSessionRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    message:  str             # English text (from Saaras or typed)
-    loan_id:  Optional[str] = None
-    language: Optional[str] = None   # detected language name: 'Hindi', 'Tamil' (for response translation)
+    message:       str             # English text (from Saaras or typed)
+    loan_id:       Optional[str] = None
+    language_code: Optional[str] = None   # BCP-47 code from Sarvam STT: 'hi-IN', 'ta-IN', etc. (for response translation)
 
 
 # ─────────────────────────────────────────────
@@ -58,6 +58,9 @@ _DISPLAY_TO_BCP47 = {
     "Punjabi":   "pa-IN",
     "Odia":      "od-IN",
 }
+
+# Reverse mapping: BCP-47 code → display name
+_BCP47_TO_DISPLAY = {v: k for k, v in _DISPLAY_TO_BCP47.items()}
 
 
 async def _translate_mayura(text: str, src: str, tgt: str) -> str:
@@ -402,8 +405,8 @@ async def send_message(
 
     # ── Extract and process user message ──────────────────────────
     user_text       = body.message.strip()
-    user_language   = (body.language or "").strip()  # "Hindi", "Tamil", etc.
-    user_lang_code  = _DISPLAY_TO_BCP47.get(user_language, "en-IN") if user_language else "en-IN"
+    user_lang_code  = (body.language_code or "en-IN").strip()  # BCP-47 code from frontend
+    user_language   = _BCP47_TO_DISPLAY.get(user_lang_code, "English")  # Convert to display name
     needs_translation = not user_lang_code.startswith("en")
     
     print(f"[Chat] User language: {user_language} ({user_lang_code}), needs_translation: {needs_translation}")

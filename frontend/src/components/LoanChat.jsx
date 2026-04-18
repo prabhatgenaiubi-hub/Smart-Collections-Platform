@@ -36,7 +36,8 @@ export default function LoanChat({ loan, onClose }) {
   const [error,        setError]        = useState('');
 
   // Multilingual + voice state
-  const [language,   setLanguage]   = useState('Hindi');  // Default to Hindi for better STT accuracy
+  const [detectedLanguage, setDetectedLanguage] = useState(null);  // Auto-detected language name
+  const [detectedLanguageCode, setDetectedLanguageCode] = useState(null);  // BCP-47 code for replies
   const [recording,  setRecording]  = useState(false);
   const [micLoading, setMicLoading] = useState(false);
   const [micError,   setMicError]   = useState('');
@@ -93,21 +94,23 @@ export default function LoanChat({ loan, onClose }) {
 
   const backToList = () => {
     setView('list'); setSessionId(null); setMessages([]);
-    setInput(''); setError(''); setLanguage('auto'); setMicError('');
+    setInput(''); setError(''); setDetectedLanguage(null); setDetectedLanguageCode(null); setMicError('');
     loadSessions();
   };
 
-  // sendMessage(englishText, displayText, lang, isVoice)
+  // sendMessage(englishText, displayText, detectedLang, detectedCode, isVoice)
   // - englishText: English text for LLM processing (optional, defaults to input)
   // - displayText: Original language text for UI display (optional, defaults to englishText or input)
-  // - lang: language name e.g. 'Hindi' (optional, defaults to state language)
+  // - detectedLang: detected language name e.g. 'Hindi' (optional)
+  // - detectedCode: detected BCP-47 code e.g. 'hi-IN' (optional)
   // - isVoice: true if from voice recording (already has English translation)
-  const sendMessage = useCallback(async (englishText, displayText, langArg, isVoice = false) => {
+  const sendMessage = useCallback(async (englishText, displayText, detectedLang, detectedCode, isVoice = false) => {
     // For typed text: englishText = undefined, displayText = undefined, isVoice = false
     // For voice text: englishText = English translation, displayText = native text, isVoice = true
     const textForBackend = isVoice ? (englishText ?? input).trim() : (displayText ?? input).trim();
     const textForDisplay = displayText || englishText || input;
-    const lang = langArg ?? language;
+    const lang = detectedLang ?? detectedLanguage;
+    const langCode = detectedCode ?? detectedLanguageCode;
     if (!textForBackend || !sessionId || sending) return;
     setInput(''); setSending(true); setError('');
     
@@ -124,7 +127,7 @@ export default function LoanChat({ loan, onClose }) {
       const r = await api.post(`/chat/sessions/${sessionId}/message`, {
         message:           textForBackend,  // English for voice, native for typed
         loan_id:           loan.loan_id,
-        ...(lang !== 'auto' && { language: lang }),  // language for response translation
+        ...(langCode && { language_code: langCode }),  // BCP-47 code for response translation
       });
       // Response includes: ai_response, detected_language, analysis
       const aiMsg = { ...r.data.ai_response };
@@ -132,8 +135,6 @@ export default function LoanChat({ loan, onClose }) {
         aiMsg.analysis = r.data.analysis;  // Attach analysis to the message
       }
       setMessages(m => [...m, aiMsg]);
-      // DO NOT auto-update language - respect user's manual selection
-      // if (r.data.detected_language) setLanguage(r.data.detected_language);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to send message.');
       setMessages(m => [...m, {
@@ -142,7 +143,7 @@ export default function LoanChat({ loan, onClose }) {
         timestamp: new Date().toISOString(),
       }]);
     } finally { setSending(false); }
-  }, [input, sessionId, sending, loan.loan_id, language]);
+  }, [input, sessionId, sending, loan.loan_id, detectedLanguage, detectedLanguageCode]);
 
   const handleKey = e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -193,12 +194,7 @@ export default function LoanChat({ loan, onClose }) {
           const fd   = new FormData();
           fd.append('audio_file', blob, `voice.${ext}`);
 
-          // Pass current language as hint so Saaras knows what to expect
-          const langHint = _LANG_TO_BCP47[language] || '';
-          console.log('[Voice] Selected language:', language);
-          console.log('[Voice] Language hint to send:', langHint);
-          if (langHint) fd.append('language_hint', langHint);
-
+          // Sarvam auto-detects language from voice - no hint needed
           const resp = await api.post('/customer/self-cure/transcribe', fd, {
             headers: { 'Content-Type': 'multipart/form-data' },
           });
@@ -210,17 +206,18 @@ export default function LoanChat({ loan, onClose }) {
           //   native_transcript  — Original language text (for UI display)
           //   detected_language  — display name ('Hindi', 'Tamil', etc.)
           //   language_code      — BCP-47 code ('hi-IN', etc.)
-          const { transcript, native_transcript, detected_language: detectedLang } = resp.data;
+          const { transcript, native_transcript, detected_language: detectedLang, language_code } = resp.data;
 
-          // DO NOT auto-update language dropdown - respect user's manual selection
-          // if (detectedLang && detectedLang !== 'auto') setLanguage(detectedLang);
+          // Store detected language for automatic reply translation
+          if (detectedLang) setDetectedLanguage(detectedLang);
+          if (language_code) setDetectedLanguageCode(language_code);
 
           if (transcript && transcript.trim()) {
             // For VOICE: Send English transcript to backend, but display native text in UI
             // native_transcript = Hindi/Tamil (for display)
             // transcript = English (for backend/LLM)
             const displayText = native_transcript || transcript;
-            await sendMessage(transcript.trim(), displayText, language, true);  // isVoice=true
+            await sendMessage(transcript.trim(), displayText, detectedLang, language_code, true);  // isVoice=true
           } else {
             setMicError('Could not transcribe audio. Please try speaking clearly.');
           }
@@ -268,7 +265,7 @@ export default function LoanChat({ loan, onClose }) {
                 <p className="font-bold text-base truncate">
                   💬 {view === 'list' ? 'Loan Chat' : (sessionTitle || 'Chat')}
                 </p>
-                <LangBadge lang={language !== 'auto' ? language : null} />
+                <LangBadge lang={detectedLanguage} />
               </div>
               <p className="text-xs text-blue-100 mt-0.5 truncate">
                 {loan.loan_id} · {loan.loan_type} · ₹{loan.outstanding_balance?.toLocaleString('en-IN')} outstanding
@@ -276,25 +273,6 @@ export default function LoanChat({ loan, onClose }) {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Language Selector */}
-            <select
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-              className="bg-white/20 hover:bg-white/30 text-white text-xs font-medium px-2 py-1 rounded-lg border border-white/30 cursor-pointer focus:outline-none focus:ring-2 focus:ring-white/50"
-              title="Select your language for voice input"
-            >
-              <option value="Hindi" className="text-gray-800">🇮🇳 Hindi</option>
-              <option value="Tamil" className="text-gray-800">🇮🇳 Tamil</option>
-              <option value="Telugu" className="text-gray-800">🇮🇳 Telugu</option>
-              <option value="Kannada" className="text-gray-800">🇮🇳 Kannada</option>
-              <option value="Malayalam" className="text-gray-800">🇮🇳 Malayalam</option>
-              <option value="Marathi" className="text-gray-800">🇮🇳 Marathi</option>
-              <option value="Gujarati" className="text-gray-800">🇮🇳 Gujarati</option>
-              <option value="Bengali" className="text-gray-800">🇮🇳 Bengali</option>
-              <option value="Punjabi" className="text-gray-800">🇮🇳 Punjabi</option>
-              <option value="English" className="text-gray-800">🌐 English</option>
-            </select>
-            
             {view === 'list' && (
               <button
                 onClick={createSession}
@@ -325,7 +303,7 @@ export default function LoanChat({ loan, onClose }) {
         {view === 'chat' && (
           <div className="px-4 py-1.5 bg-blue-50 border-b border-blue-100 flex items-center gap-2 flex-shrink-0">
             <span className="text-[11px] text-blue-600 font-medium">
-              🌐 Selected: {language}
+              🌐 {detectedLanguage ? `Speaking: ${detectedLanguage}` : 'Auto-detect enabled'}
             </span>
             <span className="text-[11px] text-gray-400">· Responses in your language</span>
             {micSupported && (
