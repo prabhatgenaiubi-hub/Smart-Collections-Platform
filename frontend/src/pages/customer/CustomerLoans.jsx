@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../../api';
 import LoanChat from '../../components/LoanChat';
+import VideoCallAgent from '../../components/VideoCallAgent'; // ← Video Agent
 
 const statusBadge = (status) => {
   const map = {
@@ -28,6 +29,7 @@ export default function CustomerLoans() {
   const [message, setMessage] = useState('');
   const [selectedLoan, setSelectedLoan] = useState(null); // for modal
   const [chatLoan,     setChatLoan]     = useState(null); // for inline loan chat
+  const [videoAgentLoan, setVideoAgentLoan] = useState(null); // ← Video Agent state
   const [bounceRisks, setBounceRisks] = useState({}); // { loanId: riskData }
   const [loadingRisks, setLoadingRisks] = useState(true);
   const [showAutoPayModal, setShowAutoPayModal] = useState(null); // loanId for modal
@@ -209,6 +211,13 @@ export default function CustomerLoans() {
                   >
                     💬 Chat
                   </button>
+                  {/* ← Video Call Agent Button */}
+                  <button
+                    onClick={() => setVideoAgentLoan(loan.loan_id)}
+                    className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white text-xs font-semibold rounded-xl transition-all shadow-md hover:shadow-lg"
+                  >
+                    📹 Ask Video AI Agent
+                  </button>
                 </div>
               </div>
             </div>
@@ -224,6 +233,11 @@ export default function CustomerLoans() {
       {/* Loan-scoped AI Chat slide-over */}
       {chatLoan && (
         <LoanChat loan={chatLoan} onClose={() => setChatLoan(null)} />
+      )}
+
+      {/* Video Call Agent Modal */}
+      {videoAgentLoan && (
+        <VideoCallAgent loanId={videoAgentLoan} onClose={() => setVideoAgentLoan(null)} />
       )}
 
       {/* Auto-Pay Enrollment Modal */}
