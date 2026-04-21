@@ -31,6 +31,7 @@ from backend.routers.preferences import router as preferences_router
 from backend.routers.officer     import router as officer_router
 from backend.routers.outreach    import router as outreach_router   # ← Digital Outreach Agent
 from backend.routers.performance import router as performance_router  # ← Performance & Coaching
+from backend.routers.bounce_prevention import router as bounce_prevention_router  # ← Bounce Prevention
 
 
 # ─────────────────────────────────────────────
@@ -119,6 +120,7 @@ app.include_router(preferences_router)
 app.include_router(officer_router)
 app.include_router(outreach_router)          # ← Digital Outreach Agent
 app.include_router(performance_router)       # ← Performance & Coaching
+app.include_router(bounce_prevention_router) # ← Bounce Prevention & Payment Assurance
 
 
 # ─────────────────────────────────────────────

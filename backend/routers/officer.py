@@ -13,6 +13,7 @@ Endpoints:
 
 import os
 import tempfile
+import subprocess
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -33,6 +34,9 @@ from backend.agents.sentiment_agent import (
 from backend.agents.llm_reasoning_agent import generate_recovery_recommendation
 from analytics.npv_calculator import calculate_portfolio_npv
 
+# Import Sarvam AI SDK
+from sarvamai import SarvamAI
+
 router = APIRouter(prefix="/officer", tags=["Bank Officer"])
 
 
@@ -40,8 +44,9 @@ router = APIRouter(prefix="/officer", tags=["Bank Officer"])
 # Helper: Build Loan Summary Dict
 # ─────────────────────────────────────────────
 
-def build_loan_summary(loan: Loan, customer: Customer) -> dict:
-    return {
+def build_loan_summary(loan: Loan, customer: Customer, db: Session = None) -> dict:
+    """Build loan summary with optional bounce risk data."""
+    result = {
         "loan_id":             loan.loan_id,
         "customer_id":         customer.customer_id,
         "customer_name":       customer.customer_name,
@@ -55,6 +60,32 @@ def build_loan_summary(loan: Loan, customer: Customer) -> dict:
         "self_cure_probability": loan.self_cure_probability,
         "recommended_channel": loan.recommended_channel,
     }
+    
+    # Include bounce risk data if db session provided
+    if db:
+        from backend.db.models import BounceRiskProfile, AutoPayMandate
+        
+        bounce_profile = db.query(BounceRiskProfile).filter(
+            BounceRiskProfile.loan_id == loan.loan_id
+        ).first()
+        
+        auto_pay = db.query(AutoPayMandate).filter(
+            AutoPayMandate.loan_id == loan.loan_id,
+            AutoPayMandate.status == "Active"
+        ).first()
+        
+        if bounce_profile:
+            result["bounce_risk_level"] = bounce_profile.risk_level
+            result["bounce_risk_score"] = bounce_profile.risk_score
+            result["bounce_probability"] = bounce_profile.next_emi_bounce_probability
+            result["auto_pay_enabled"] = auto_pay is not None
+        else:
+            result["bounce_risk_level"] = None
+            result["bounce_risk_score"] = None
+            result["bounce_probability"] = None
+            result["auto_pay_enabled"] = False
+    
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -144,6 +175,17 @@ def get_dashboard(
     # ── Overdue loans breakdown ───────────────────────────────────
     overdue_loans = [l for l in all_loans if l.days_past_due > 0]
 
+    # ── Bounce Risk Statistics ───────────────────────────────────
+    from backend.db.models import BounceRiskProfile, AutoPayMandate
+    bounce_profiles = db.query(BounceRiskProfile).all()
+    
+    high_bounce_risk = [p for p in bounce_profiles if p.risk_level == "High"]
+    medium_bounce_risk = [p for p in bounce_profiles if p.risk_level == "Medium"]
+    low_bounce_risk = [p for p in bounce_profiles if p.risk_level == "Low"]
+    
+    active_autopay = db.query(AutoPayMandate).filter(AutoPayMandate.status == "Active").count()
+    autopay_rate = (active_autopay / len(all_loans) * 100) if all_loans else 0
+
     return {
         "summary": {
             "total_borrowers":          total_borrowers,
@@ -159,6 +201,12 @@ def get_dashboard(
             "self_cure_rate":           round(avg_self_cure * 100, 1),
             "pending_grace_requests":   pending_grace,
             "pending_restructure_requests": pending_restructure,
+            # Bounce Prevention Stats
+            "high_bounce_risk_customers":   len(high_bounce_risk),
+            "medium_bounce_risk_customers": len(medium_bounce_risk),
+            "low_bounce_risk_customers":    len(low_bounce_risk),
+            "autopay_enrollment_rate":      round(autopay_rate, 1),
+            "active_autopay_mandates":      active_autopay,
         },
         "charts": {
             "risk_distribution":    risk_distribution,
@@ -178,6 +226,7 @@ def search_customers(
     name:         Optional[str] = Query(None, description="Search by Customer Name"),
     loan_type:    Optional[str] = Query(None, description="Search by Loan Type"),
     risk_segment: Optional[str] = Query(None, description="Search by Risk Segment"),
+    bounce_risk_level: Optional[str] = Query(None, description="Search by Bounce Risk Level (High/Medium/Low)"),
     current_user: dict          = Depends(get_current_officer),
     db: Session                 = Depends(get_db)
 ):
@@ -187,10 +236,10 @@ def search_customers(
     At least one search parameter must be provided.
     Returns a list of matching loan records with customer details.
     """
-    if not any([loan_id, customer_id, name, loan_type, risk_segment]):
+    if not any([loan_id, customer_id, name, loan_type, risk_segment, bounce_risk_level]):
         raise HTTPException(
             status_code = 400,
-            detail      = "At least one search parameter is required: loan_id, customer_id, name, loan_type, or risk_segment."
+            detail      = "At least one search parameter is required: loan_id, customer_id, name, loan_type, risk_segment, or bounce_risk_level."
         )
 
     # ── Build filter conditions (OR logic) ────────────────────────
@@ -224,25 +273,37 @@ def search_customers(
         conditions.append(Loan.customer_id.in_(customer_ids_from_search))
 
     # ── Execute query ─────────────────────────────────────────────
-    if not conditions:
-        return {"results": [], "total": 0}
+    if not conditions and not bounce_risk_level:
+        # If only bounce_risk_level is provided, get all loans
+        if bounce_risk_level:
+            matched_loans = db.query(Loan).order_by(Loan.days_past_due.desc()).limit(200).all()
+        else:
+            return {"results": [], "total": 0}
+    else:
+        matched_loans = (
+            db.query(Loan)
+            .filter(or_(*conditions)) if conditions else db.query(Loan)
+        ).order_by(Loan.days_past_due.desc()).limit(200).all()
 
-    matched_loans = (
-        db.query(Loan)
-        .filter(or_(*conditions))
-        .order_by(Loan.days_past_due.desc())
-        .limit(50)
-        .all()
-    )
+    # ── Filter by bounce risk level if specified ─────────────────
+    if bounce_risk_level:
+        from backend.db.models import BounceRiskProfile
+        # Get loan IDs with matching bounce risk level
+        bounce_profiles = db.query(BounceRiskProfile).filter(
+            BounceRiskProfile.risk_level == bounce_risk_level
+        ).all()
+        bounce_loan_ids = {p.loan_id for p in bounce_profiles}
+        # Filter matched loans to only those with matching bounce risk
+        matched_loans = [loan for loan in matched_loans if loan.loan_id in bounce_loan_ids]
 
     # ── Build results ─────────────────────────────────────────────
     results = []
-    for loan in matched_loans:
+    for loan in matched_loans[:50]:  # Limit to 50 results
         customer = db.query(Customer).filter(
             Customer.customer_id == loan.customer_id
         ).first()
         if customer:
-            results.append(build_loan_summary(loan, customer))
+            results.append(build_loan_summary(loan, customer, db))
 
     return {
         "results": results,
@@ -414,6 +475,22 @@ def get_loan_intelligence(
         for rr in restructure_requests
     ]
 
+    # ── Bounce Prevention Recommendation ─────────────────────────
+    from backend.db.models import BounceRiskProfile, AutoPayMandate
+    bounce_profile = db.query(BounceRiskProfile).filter(BounceRiskProfile.loan_id == loan_id).first()
+    auto_pay = db.query(AutoPayMandate).filter(AutoPayMandate.loan_id == loan_id).first()
+    
+    bounce_recommendation = None
+    if bounce_profile and not auto_pay:
+        if bounce_profile.risk_level == "High":
+            bounce_recommendation = f"⚠️ URGENT: High EMI bounce risk ({bounce_profile.risk_score}/100). Recommend enabling Auto-Pay (e-NACH) immediately. Call customer to enroll."
+        elif bounce_profile.risk_level == "Medium":
+            bounce_recommendation = f"⚠️ Medium EMI bounce risk ({bounce_profile.risk_score}/100). Send Auto-Pay enrollment link via WhatsApp."
+        elif bounce_profile.risk_level == "Low":
+            bounce_recommendation = f"✅ Low EMI bounce risk ({bounce_profile.risk_score}/100). Monitor payment behavior."
+    elif auto_pay and auto_pay.status == "Active":
+        bounce_recommendation = "✅ Auto-Pay is active. EMI bounce risk mitigated."
+
     return {
         # ── Loan Details ──────────────────────────────────────────
         "loan": {
@@ -463,6 +540,9 @@ def get_loan_intelligence(
 
         # ── LLM Recommendation ────────────────────────────────────
         "llm_recommendation":  llm_recommendation,
+
+        # ── Bounce Prevention Recommendation ──────────────────────
+        "bounce_prevention_recommendation": bounce_recommendation,
 
         # ── Policy Validation ─────────────────────────────────────
         "policy_validation":   policy_validation,
@@ -610,8 +690,7 @@ async def analyze_call_audio(
     db: Session               = Depends(get_db),
 ):
     """
-    Accept an audio file (upload or recorded blob), transcribe it with
-    OpenAI Whisper (tiny model – runs locally, no API key needed),
+    Accept an audio file, transcribe with Sarvam Saaras v3 (multilingual),
     run sentiment analysis, save to InteractionHistory, and return results.
 
     Form fields:
@@ -623,48 +702,156 @@ async def analyze_call_audio(
     if not customer:
         raise HTTPException(status_code=404, detail=f"Customer '{customer_id}' not found.")
 
-    # ── 2. Save upload to a temp file ────────────────────────────
-    suffix = os.path.splitext(audio_file.filename or "audio.webm")[1] or ".webm"
-    tmp_path = None
+    # ── 2. Transcribe with Sarvam (EXACT COPY from copilot/upload-call) ──
+    print(f"\n{'='*60}")
+    print(f"[Sentiment] ===== NEW CALL ANALYSIS =====")
+    print(f"[Sentiment] Filename: {audio_file.filename}")
+    print(f"[Sentiment] Customer: {customer_id}")
+    print(f"{'='*60}\n")
+    
+    input_path = None
+    wav_path = None
+    chunks = []
     transcript = ""
-
+    native_transcript = ""
+    detected_language = "English"
+    language_code = "en-IN"
+    
     try:
+        # ── Save uploaded file ────────────────────────────────────
+        suffix = os.path.splitext(audio_file.filename or "audio.webm")[1] or ".webm"
+        print(f"[Sentiment] Saving uploaded file with suffix: {suffix}")
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp_path = tmp.name
-            contents = await audio_file.read()
-            tmp.write(contents)
-
-        # ── 3. Transcribe with Whisper ────────────────────────────
-        try:
-            import whisper as _whisper
-            model = _whisper.load_model("tiny")          # ~39 MB, fast
-            result = model.transcribe(tmp_path, fp16=False)
-            transcript = result.get("text", "").strip()
-        except Exception as whisper_err:
-            print(f"[AnalyzeCall] Whisper error: {whisper_err}")
-            # Graceful fallback: use filename as a stub transcript
-            transcript = (
-                f"[Transcription unavailable – Whisper error: {whisper_err}] "
-                f"Audio file: {audio_file.filename}"
+            content = await audio_file.read()
+            tmp.write(content)
+            tmp.flush()
+            input_path = tmp.name
+        print(f"[Sentiment] Saved to: {input_path}, size: {len(content)} bytes")
+        
+        # ── Initialize Sarvam AI client ───────────────────────────
+        sarvam_api_key = os.getenv("SARVAM_API_KEY", "")
+        if not sarvam_api_key:
+            raise HTTPException(status_code=500, detail="SARVAM_API_KEY not configured")
+        
+        client = SarvamAI(api_subscription_key=sarvam_api_key)
+        
+        # ── Convert to WAV (16kHz, mono) ──────────────────────────
+        print(f"[Sentiment] Converting {audio_file.filename} to WAV format...")
+        wav_path = _convert_to_wav_officer(input_path)
+        
+        # ── Split into chunks (29s max) ───────────────────────────
+        print(f"[Sentiment] Splitting audio into {MAX_CHUNK_SECONDS}s chunks...")
+        chunks = _split_audio_officer(wav_path)
+        print(f"[Sentiment] Created {len(chunks)} chunk(s)")
+        
+        # ── Transcribe each chunk ─────────────────────────────────
+        native_transcripts = []
+        detected_lang_code = None
+        
+        for i, chunk_path in enumerate(chunks):
+            print(f"[Sentiment] Processing chunk {i+1}/{len(chunks)}: {chunk_path}")
+            
+            with open(chunk_path, "rb") as audio_file_handle:
+                response = client.speech_to_text.transcribe(
+                    file=audio_file_handle,
+                    model="saaras:v3"
+                )
+            
+            native_text = response.transcript.strip()
+            chunk_lang = response.language_code
+            
+            print(f"✅ [Chunk {i+1}] Language: {chunk_lang}, Native text: '{native_text[:60]}'")
+            
+            if native_text:
+                native_transcripts.append(native_text)
+                detected_lang_code = chunk_lang
+        
+        # ── Combine native transcripts ────────────────────────────
+        if not native_transcripts:
+            raise HTTPException(
+                status_code=422, 
+                detail="Could not transcribe audio. Please speak clearly and try again."
             )
-
-    finally:
-        # Always clean up the temp file
-        if tmp_path and os.path.exists(tmp_path):
+        
+        native_transcript = " ".join(native_transcripts)
+        language_code = detected_lang_code or "hi-IN"
+        detected_language = SARVAM_LANG_MAP.get(language_code, "Hindi")
+        
+        # ── Translate to English using Mayura (for LLM processing) ─
+        transcript = native_transcript  # Default fallback
+        
+        if not language_code.startswith("en"):
+            print(f"[Sentiment] Translating {detected_language} → English using Mayura...")
             try:
-                os.unlink(tmp_path)
+                translate_response = client.text.translate(
+                    input=native_transcript,
+                    source_language_code=language_code,
+                    target_language_code="en-IN",
+                    model="mayura:v1"
+                )
+                transcript = translate_response.translated_text.strip()
+                print(f"✅ [Sentiment] Mayura translation: '{transcript[:60]}'")
+            except Exception as e:
+                print(f"⚠️ [Sentiment] Mayura translation failed: {e}, using native text")
+        
+        print(f"✅ [Sentiment] SUCCESS!")
+        print(f"   Language: {detected_language} ({language_code})")
+        print(f"   Native text: '{native_transcript[:100]}'")
+        print(f"   English text: '{transcript[:100]}'")
+    
+    except subprocess.CalledProcessError as e:
+        print(f"❌ [Sentiment] FFmpeg error: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Audio conversion failed. Please ensure audio file is valid."
+        )
+    
+    except HTTPException:
+        raise
+    
+    except Exception as e:
+        import traceback
+        print(f"❌ [Sentiment] Transcription error: {e}")
+        print(f"[Sentiment] Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Transcription failed: {str(e)}"
+        )
+    
+    finally:
+        # Cleanup temp files
+        for path in [input_path, wav_path]:
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+        # Cleanup chunks
+        if chunks:
+            for chunk_path in chunks:
+                try:
+                    os.unlink(chunk_path)
+                except Exception:
+                    pass
+            # Cleanup chunk directory
+            try:
+                chunk_dir = os.path.dirname(chunks[0])
+                if os.path.exists(chunk_dir):
+                    import shutil
+                    shutil.rmtree(chunk_dir)
             except Exception:
                 pass
 
     if not transcript:
         transcript = "[No speech detected in the audio file.]"
+        native_transcript = transcript
 
     # ── 4. Sentiment + summary + save to DB ──────────────────────
     result_dict = analyze_and_store_interaction(
         db                = db,
         customer_id       = customer_id,
         interaction_type  = "Call",
-        conversation_text = transcript,
+        conversation_text = transcript,  # English for LLM
         customer_name     = customer.customer_name,
     )
 
@@ -672,7 +859,10 @@ async def analyze_call_audio(
         "success":            True,
         "customer_id":        customer_id,
         "customer_name":      customer.customer_name,
-        "transcript":         transcript,
+        "transcript":         transcript,  # English
+        "transcript_original": native_transcript,  # Native language
+        "detected_language":  detected_language,  # "Hindi", "Tamil", etc.
+        "language_code":      language_code,  # "hi-IN", "ta-IN", etc.
         "sentiment_score":    result_dict["sentiment_score"],
         "tonality":           result_dict["tonality_score"],
         "interaction_summary": result_dict["interaction_summary"],
@@ -816,7 +1006,7 @@ def get_customer_for_officer(
 
     loans = db.query(Loan).filter(Loan.customer_id == customer_id).all()
 
-    loan_summaries = [build_loan_summary(l, customer) for l in loans]
+    loan_summaries = [build_loan_summary(l, customer, db) for l in loans]
 
     total_outstanding = sum(l.outstanding_balance for l in loans)
     high_risk_loans   = [l for l in loans if l.risk_segment == "High"]
@@ -1452,6 +1642,67 @@ import requests as _requests
 
 
 # ─────────────────────────────────────────────
+# Audio Processing Helper Functions (PROVEN APPROACH from customer.py)
+# ─────────────────────────────────────────────
+
+MAX_CHUNK_SECONDS = 29
+
+SARVAM_LANG_MAP = {
+    "hi-IN": "Hindi",   "ta-IN": "Tamil",   "te-IN": "Telugu",
+    "kn-IN": "Kannada", "ml-IN": "Malayalam","mr-IN": "Marathi",
+    "gu-IN": "Gujarati","bn-IN": "Bengali", "en-IN": "English",
+    "pa-IN": "Punjabi", "od-IN": "Odia",
+}
+
+
+def _convert_to_wav_officer(input_path: str) -> str:
+    """Convert audio file to WAV format (16kHz, mono) for Saaras."""
+    output_path = input_path + ".wav"
+    
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",                # Overwrite output file if exists
+            "-i", input_path,    # Input file
+            "-ar", "16000",      # Sample rate: 16kHz (required by Saaras)
+            "-ac", "1",          # Audio channels: 1 (mono)
+            output_path
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True
+    )
+    
+    return output_path
+
+
+def _split_audio_officer(wav_path: str) -> list[str]:
+    """Split audio into 29-second chunks (Saaras has 30s limit)."""
+    chunk_dir = tempfile.mkdtemp()
+    pattern = os.path.join(chunk_dir, "chunk_%03d.wav")
+    
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-i", wav_path,
+            "-f", "segment",
+            "-segment_time", str(MAX_CHUNK_SECONDS),
+            "-c", "copy",
+            pattern
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True
+    )
+    
+    return sorted(
+        os.path.join(chunk_dir, f)
+        for f in os.listdir(chunk_dir)
+        if f.endswith(".wav")
+    )
+
+
+# ─────────────────────────────────────────────
 # POST /officer/copilot/upload-call
 # ─────────────────────────────────────────────
 
@@ -1478,69 +1729,153 @@ async def copilot_upload_call(
     if not customer:
         raise HTTPException(status_code=404, detail=f"Customer '{customer_id}' not found.")
 
-    # ── Save upload to temp file ──────────────────────────────────
-    suffix   = os.path.splitext(audio_file.filename or "audio.webm")[1] or ".webm"
-    tmp_path = None
+    # ── Transcribe audio (EXACT COPY from customer.py) ───────────
+    print(f"\n{'='*60}")
+    print(f"[CoPilot] ===== NEW CALL UPLOAD =====")
+    print(f"[CoPilot] Filename: {audio_file.filename}")
+    print(f"[CoPilot] Customer: {customer_id}")
+    print(f"{'='*60}\n")
+    
+    input_path = None
+    wav_path = None
+    chunks = []
     transcript = ""
-
+    native_transcript = ""
+    detected_language = "English"
+    language_code = "en-IN"
+    
     try:
+        # ── Save uploaded file ────────────────────────────────────
+        suffix = os.path.splitext(audio_file.filename or "audio.webm")[1] or ".webm"
+        print(f"[CoPilot] Saving uploaded file with suffix: {suffix}")
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp_path = tmp.name
-            contents = await audio_file.read()
-            tmp.write(contents)
-
-        # ── Try Sarvam STT first (if API key configured) ──────────
-        sarvam_key = os.getenv("SARVAM_API_KEY", "")
-        if sarvam_key:
-            try:
-                import httpx as _httpx
-                with open(tmp_path, "rb") as af:
-                    sarvam_resp = _httpx.post(
-                        "https://api.sarvam.ai/speech-to-text",
-                        headers={"api-subscription-key": sarvam_key},
-                        files={"file": (audio_file.filename or "audio.wav", af, "audio/wav")},
-                        data={"model": "saaras:v2", "with_timestamps": "false"},
-                        timeout=60,
-                    )
-                if sarvam_resp.status_code == 200:
-                    sarvam_data = sarvam_resp.json()
-                    transcript = sarvam_data.get("transcript", "").strip()
-                    print(f"[CoPilot] Sarvam STT success. Language: {sarvam_data.get('language_code')}")
-                else:
-                    print(f"[CoPilot] Sarvam STT failed ({sarvam_resp.status_code}), falling back to Whisper.")
-            except Exception as sarvam_err:
-                print(f"[CoPilot] Sarvam STT error: {sarvam_err}. Falling back to Whisper.")
-
-        # ── Whisper fallback ──────────────────────────────────────
-        if not transcript:
-            try:
-                import whisper as _whisper
-                model      = _whisper.load_model("tiny")
-                result     = model.transcribe(tmp_path, fp16=False)
-                transcript = result.get("text", "").strip()
-                print("[CoPilot] Whisper transcription complete.")
-            except Exception as whisper_err:
-                print(f"[CoPilot] Whisper error: {whisper_err}")
-                transcript = (
-                    f"[Transcription unavailable – error: {whisper_err}] "
-                    f"File: {audio_file.filename}"
+            content = await audio_file.read()
+            tmp.write(content)
+            tmp.flush()
+            input_path = tmp.name
+        print(f"[CoPilot] Saved to: {input_path}, size: {len(content)} bytes")
+        
+        # ── Initialize Sarvam AI client ───────────────────────────
+        sarvam_api_key = os.getenv("SARVAM_API_KEY", "")
+        if not sarvam_api_key:
+            raise HTTPException(status_code=500, detail="SARVAM_API_KEY not configured")
+        
+        client = SarvamAI(api_subscription_key=sarvam_api_key)
+        
+        # ── Convert to WAV (16kHz, mono) ──────────────────────────
+        print(f"[CoPilot] Converting {audio_file.filename} to WAV format...")
+        wav_path = _convert_to_wav_officer(input_path)
+        
+        # ── Split into chunks (29s max) ───────────────────────────
+        print(f"[CoPilot] Splitting audio into {MAX_CHUNK_SECONDS}s chunks...")
+        chunks = _split_audio_officer(wav_path)
+        print(f"[CoPilot] Created {len(chunks)} chunk(s)")
+        
+        # ── Transcribe each chunk ─────────────────────────────────
+        native_transcripts = []
+        detected_lang_code = None
+        
+        for i, chunk_path in enumerate(chunks):
+            print(f"[CoPilot] Processing chunk {i+1}/{len(chunks)}: {chunk_path}")
+            
+            with open(chunk_path, "rb") as audio_file_handle:
+                # Use transcribe() method - returns NATIVE script (Hindi, Tamil, etc.)
+                response = client.speech_to_text.transcribe(
+                    file=audio_file_handle,
+                    model="saaras:v3"  # Latest Saaras model
                 )
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
+            
+            native_text = response.transcript.strip()
+            chunk_lang = response.language_code
+            
+            print(f"✅ [Chunk {i+1}] Language: {chunk_lang}, Native text: '{native_text[:60]}'")
+            
+            if native_text:
+                native_transcripts.append(native_text)
+                detected_lang_code = chunk_lang
+        
+        # ── Combine native transcripts ────────────────────────────
+        if not native_transcripts:
+            raise HTTPException(
+                status_code=422, 
+                detail="Could not transcribe audio. Please speak clearly and try again."
+            )
+        
+        native_transcript = " ".join(native_transcripts)
+        language_code = detected_lang_code or "hi-IN"
+        detected_language = SARVAM_LANG_MAP.get(language_code, "Hindi")
+        
+        # ── Translate to English using Mayura (for LLM processing) ─
+        transcript = native_transcript  # Default fallback
+        
+        if not language_code.startswith("en"):
+            print(f"[CoPilot] Translating {detected_language} → English using Mayura...")
             try:
-                os.unlink(tmp_path)
+                translate_response = client.text.translate(
+                    input=native_transcript,
+                    source_language_code=language_code,
+                    target_language_code="en-IN",
+                    model="mayura:v1"
+                )
+                transcript = translate_response.translated_text.strip()
+                print(f"✅ [CoPilot] Mayura translation: '{transcript[:60]}'")
+            except Exception as e:
+                print(f"⚠️ [CoPilot] Mayura translation failed: {e}, using native text")
+        
+        print(f"✅ [CoPilot] SUCCESS!")
+        print(f"   Language: {detected_language} ({language_code})")
+        print(f"   Native text: '{native_transcript[:100]}'")
+        print(f"   English text: '{transcript[:100]}'")
+    
+    except subprocess.CalledProcessError as e:
+        print(f"❌ [CoPilot] FFmpeg error: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Audio conversion failed. Please ensure audio file is valid."
+        )
+    
+    except HTTPException:
+        raise
+    
+    except Exception as e:
+        import traceback
+        print(f"❌ [CoPilot] Transcription error: {e}")
+        print(f"[CoPilot] Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Transcription failed: {str(e)}"
+        )
+    
+    finally:
+        # Cleanup temp files
+        for path in [input_path, wav_path]:
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+        # Cleanup chunks
+        if chunks:
+            for chunk_path in chunks:
+                try:
+                    os.unlink(chunk_path)
+                except Exception:
+                    pass
+            # Cleanup chunk directory
+            try:
+                chunk_dir = os.path.dirname(chunks[0])
+                if os.path.exists(chunk_dir):
+                    import shutil
+                    shutil.rmtree(chunk_dir)
             except Exception:
                 pass
-
-    if not transcript:
-        transcript = "[No speech detected in the audio file.]"
 
     # ── Run Co-Pilot agent ────────────────────────────────────────
     officer_id = current_user.get("user_id", "unknown")
     result = run_copilot_agent(
         db          = db,
         customer_id = customer_id,
-        transcript  = transcript,
+        transcript  = transcript,  # Always English for LLM
         officer_id  = officer_id,
         loan_id     = loan_id or None,
     )
@@ -1628,10 +1963,11 @@ async def copilot_upload_call(
         "call_session_id":      result["call_session_id"],
         "customer_id":          customer_id,
         "customer_name":        result["customer_name"],
-        "transcript":           result["transcript"],
-        "transcript_original":  result.get("transcript_original", result["transcript"]),
-        "transcript_english":   result.get("transcript_english",  result["transcript"]),
-        "language_detected":    result["language_detected"],
+        "transcript":           result["transcript"],  # English (for LLM)
+        "transcript_original":  native_transcript,  # Original language
+        "transcript_english":   transcript,  # English translation
+        "language_detected":    detected_language,  # Display name: "Hindi", "Tamil", etc.
+        "language_code":        language_code,  # BCP-47: "hi-IN", "ta-IN", etc.
         "sentiment_score":      result["sentiment_score"],
         "tonality":             result["tonality"],
         "suggested_responses":  result["suggested_responses"],

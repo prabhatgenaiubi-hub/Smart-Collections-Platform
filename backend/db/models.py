@@ -346,3 +346,113 @@ class SuccessPattern(Base):
     created_at        = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     officer           = relationship("BankOfficer", foreign_keys=[officer_id])
+
+
+# ═════════════════════════════════════════════════════════════════
+# BOUNCE PREVENTION & PAYMENT ASSURANCE TABLES
+# ═════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# Bounce Risk Profile Table
+# ─────────────────────────────────────────────
+class BounceRiskProfile(Base):
+    __tablename__ = "bounce_risk_profiles"
+
+    profile_id        = Column(String, primary_key=True, default=gen_uuid)
+    loan_id           = Column(String, ForeignKey("loans.loan_id"), nullable=False)
+    customer_id       = Column(String, ForeignKey("customers.customer_id"), nullable=False)
+    
+    # Risk Metrics
+    risk_score        = Column(Float, default=0.0)  # 0-100
+    risk_level        = Column(String, default="Low")  # Low/Medium/High
+    risk_factors      = Column(Text, nullable=True)  # JSON: {'past_delays': 3, 'balance_volatility': 'high'}
+    
+    # Historical Bounce Data
+    bounce_count_3m   = Column(Integer, default=0)
+    bounce_count_6m   = Column(Integer, default=0)
+    bounce_count_12m  = Column(Integer, default=0)
+    last_bounce_date  = Column(DateTime, nullable=True)
+    
+    # Predictions
+    next_emi_bounce_probability = Column(Float, default=0.0)  # 0-1
+    predicted_bounce_date       = Column(String, nullable=True)  # YYYY-MM-DD
+    
+    # Timestamps
+    calculated_at     = Column(DateTime, default=datetime.now)
+    updated_at        = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Relationships
+    loan              = relationship("Loan", foreign_keys=[loan_id])
+    customer          = relationship("Customer", foreign_keys=[customer_id])
+
+
+# ─────────────────────────────────────────────
+# Auto-Pay Mandate Table (e-NACH tracking)
+# ─────────────────────────────────────────────
+class AutoPayMandate(Base):
+    __tablename__ = "auto_pay_mandates"
+
+    mandate_id        = Column(String, primary_key=True, default=gen_uuid)
+    loan_id           = Column(String, ForeignKey("loans.loan_id"), nullable=False)
+    customer_id       = Column(String, ForeignKey("customers.customer_id"), nullable=False)
+    
+    # Mandate Details
+    status            = Column(String, default="Pending")  # Active/Pending/Failed/Cancelled
+    mandate_type      = Column(String, default="e-NACH")  # e-NACH/Standing Instruction/UPI AutoPay
+    bank_account_number = Column(String, nullable=True)  # Masked: XXXX1234
+    ifsc_code         = Column(String, nullable=True)
+    max_amount        = Column(Float, nullable=True)
+    
+    # Activation
+    activated_at      = Column(DateTime, nullable=True)
+    activated_by      = Column(String, nullable=True)  # customer/officer
+    activation_channel = Column(String, nullable=True)  # app/whatsapp/branch/web
+    
+    # Lifecycle
+    first_debit_date  = Column(String, nullable=True)  # YYYY-MM-DD
+    expiry_date       = Column(String, nullable=True)  # YYYY-MM-DD
+    last_success_date = Column(DateTime, nullable=True)
+    failure_count     = Column(Integer, default=0)
+    
+    # Timestamps
+    created_at        = Column(DateTime, default=datetime.now)
+    updated_at        = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Relationships
+    loan              = relationship("Loan", foreign_keys=[loan_id])
+    customer          = relationship("Customer", foreign_keys=[customer_id])
+
+
+# ─────────────────────────────────────────────
+# Bounce Prevention Action Table (Campaign tracking)
+# ─────────────────────────────────────────────
+class BouncePreventionAction(Base):
+    __tablename__ = "bounce_prevention_actions"
+
+    action_id         = Column(String, primary_key=True, default=gen_uuid)
+    loan_id           = Column(String, ForeignKey("loans.loan_id"), nullable=False)
+    customer_id       = Column(String, ForeignKey("customers.customer_id"), nullable=False)
+    
+    # Action Details
+    action_type       = Column(String, nullable=False)  # whatsapp/voice_call/email/sms/auto_pay_link
+    risk_level_at_trigger = Column(String, nullable=True)  # Low/Medium/High
+    recommended_by    = Column(String, default="AI")  # AI/Officer/System
+    message_content   = Column(Text, nullable=True)  # Message text or link
+    
+    # Execution
+    triggered_at      = Column(DateTime, default=datetime.now)
+    executed_at       = Column(DateTime, nullable=True)
+    status            = Column(String, default="pending")  # pending/sent/delivered/failed
+    
+    # Outcome Tracking
+    customer_response = Column(String, nullable=True)  # opened/clicked/enrolled/ignored
+    bounce_prevented  = Column(Integer, default=0)  # 0 = False, 1 = True (effectiveness metric)
+    response_time_hours = Column(Float, nullable=True)
+    
+    # Timestamps
+    created_at        = Column(DateTime, default=datetime.now)
+    updated_at        = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Relationships
+    loan              = relationship("Loan", foreign_keys=[loan_id])
+    customer          = relationship("Customer", foreign_keys=[customer_id])
