@@ -96,6 +96,9 @@ export default function OfficerDashboard() {
         />
       </div>
 
+      {/* Bounce Prevention - Single Consolidated Card */}
+      <BounceRiskCard summary={summary} />
+
       {/* Charts */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
@@ -154,6 +157,116 @@ export default function OfficerDashboard() {
       </div>
     </div>
   );
+}
+
+function BounceRiskCard({ summary }) {
+  const totalLoans = summary.high_bounce_risk_customers + summary.medium_bounce_risk_customers + summary.low_bounce_risk_customers;
+  
+  const highPercent = totalLoans > 0 ? (summary.high_bounce_risk_customers / totalLoans * 100) : 0;
+  const mediumPercent = totalLoans > 0 ? (summary.medium_bounce_risk_customers / totalLoans * 100) : 0;
+  const lowPercent = totalLoans > 0 ? (summary.low_bounce_risk_customers / totalLoans * 100) : 0;
+  
+  return (
+    <div className="bg-white rounded-2xl shadow border border-gray-100 p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-base font-semibold text-gray-800 flex items-center gap-2">
+          🛡️ Bounce Risk & Payment Protection
+        </h3>
+      </div>
+      
+      <div className="space-y-3">
+        {/* High Risk */}
+        <BounceRiskRow
+          icon="🔴"
+          label="High Risk"
+          count={summary.high_bounce_risk_customers}
+          percent={highPercent}
+          color="red"
+          href="/officer/search?bounce_risk_level=High"
+        />
+        
+        {/* Medium Risk */}
+        <BounceRiskRow
+          icon="🟡"
+          label="Medium Risk"
+          count={summary.medium_bounce_risk_customers}
+          percent={mediumPercent}
+          color="yellow"
+          href="/officer/search?bounce_risk_level=Medium"
+        />
+        
+        {/* Low Risk */}
+        <BounceRiskRow
+          icon="🟢"
+          label="Low Risk"
+          count={summary.low_bounce_risk_customers}
+          percent={lowPercent}
+          color="green"
+        />
+        
+        {/* Divider */}
+        <div className="border-t border-gray-200 my-3"></div>
+        
+        {/* Auto-Pay Enrollment */}
+        <BounceRiskRow
+          icon="🔒"
+          label="Auto-Pay Enrolled"
+          count={summary.active_autopay_mandates}
+          percent={summary.autopay_enrollment_rate}
+          color="purple"
+          suffix={`of ${totalLoans} loans`}
+        />
+      </div>
+    </div>
+  );
+}
+
+function BounceRiskRow({ icon, label, count, percent, color, href, suffix }) {
+  const colors = {
+    red: 'bg-red-500',
+    yellow: 'bg-yellow-500',
+    green: 'bg-green-500',
+    purple: 'bg-purple-500',
+  };
+  
+  const textColors = {
+    red: 'text-red-700',
+    yellow: 'text-yellow-700',
+    green: 'text-green-700',
+    purple: 'text-purple-700',
+  };
+  
+  const Content = (
+    <div className="flex items-center gap-3">
+      <span className="text-xl">{icon}</span>
+      <div className="flex-1">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-sm font-medium text-gray-700">{label}</span>
+          <div className="flex items-center gap-2">
+            <span className={`text-sm font-bold ${textColors[color]}`}>{count}</span>
+            <span className="text-xs text-gray-500">{percent.toFixed(1)}%</span>
+          </div>
+        </div>
+        <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+          <div
+            className={`h-full ${colors[color]} rounded-full transition-all duration-300`}
+            style={{ width: `${Math.min(percent, 100)}%` }}
+          ></div>
+        </div>
+        {suffix && <p className="text-xs text-gray-500 mt-1">{suffix}</p>}
+      </div>
+    </div>
+  );
+  
+  if (href) {
+    return (
+      <a href={href} className="block hover:bg-gray-50 rounded-lg p-2 -m-2 transition-colors cursor-pointer">
+        {Content}
+      </a>
+    );
+  }
+  
+  return <div className="p-2 -m-2">{Content}</div>;
 }
 
 function KPICard({ label, value, icon, color, sub, href }) {

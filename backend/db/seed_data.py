@@ -2,7 +2,8 @@ from backend.db.database import engine, SessionLocal, Base
 from backend.db.models import (
     Customer, Loan, PaymentHistory, InteractionHistory,
     GraceRequest, RestructureRequest, CustomerPreference,
-    ChatSession, ChatMessage, BankOfficer
+    ChatSession, ChatMessage, BankOfficer,
+    BounceRiskProfile, AutoPayMandate, BouncePreventionAction
 )
 
 
@@ -425,6 +426,82 @@ def seed():
         ChatMessage(session_id="SESS003", role="assistant", message_text="Your restructure request has been submitted. A bank officer will review it within 2 business days.", timestamp="2026-03-08 11:02:30"),
     ]
     db.add_all(chat_messages)
+
+    # ═════════════════════════════════════════════════════════════════
+    # BOUNCE PREVENTION & PAYMENT ASSURANCE SEED DATA
+    # ═════════════════════════════════════════════════════════════════
+    
+    print("Seeding bounce prevention data...")
+    
+    # Import the calculator for generating risk profiles
+    from analytics.bounce_predictor import calculate_bounce_risk, predict_bounce_date
+    from datetime import datetime, timedelta
+    import json
+    
+    # Generate bounce risk profiles for all loans
+    all_loans = db.query(Loan).all()
+    bounce_profiles = []
+    
+    for loan in all_loans:
+        # Fetch payment history for this loan
+        payments = db.query(PaymentHistory).filter(PaymentHistory.loan_id == loan.loan_id).all()
+        
+        # Calculate risk
+        risk_data = calculate_bounce_risk(loan, payments, None)
+        
+        # Mock bounce counts based on risk level
+        if risk_data['level'] == 'High':
+            bounce_6m = 3
+            bounce_12m = 5
+        elif risk_data['level'] == 'Medium':
+            bounce_6m = 1
+            bounce_12m = 2
+        else:
+            bounce_6m = 0
+            bounce_12m = 0
+        
+        profile = BounceRiskProfile(
+            loan_id=loan.loan_id,
+            customer_id=loan.customer_id,
+            risk_score=risk_data['score'],
+            risk_level=risk_data['level'],
+            risk_factors=json.dumps(risk_data['factors']),
+            bounce_count_3m=bounce_6m // 2,
+            bounce_count_6m=bounce_6m,
+            bounce_count_12m=bounce_12m,
+            last_bounce_date=datetime.now() - timedelta(days=45) if bounce_6m > 0 else None,
+            next_emi_bounce_probability=risk_data['next_emi_bounce_probability'],
+            predicted_bounce_date=predict_bounce_date(loan, risk_data['next_emi_bounce_probability']),
+            calculated_at=datetime.now(),
+            updated_at=datetime.now()
+        )
+        bounce_profiles.append(profile)
+    
+    db.add_all(bounce_profiles)
+    db.flush()
+    
+    # Create auto-pay mandates for some low-risk customers (mock)
+    auto_pay_mandates = [
+        AutoPayMandate(loan_id="LOAN002", customer_id="CUST002", status="Active",  mandate_type="e-NACH", bank_account_number="XXXX5678", ifsc_code="HDFC0001234", max_amount=8500.0,  activated_at=datetime.now() - timedelta(days=30), activated_by="customer", activation_channel="app",      first_debit_date="2026-05-01", expiry_date="2027-05-01", last_success_date=datetime.now() - timedelta(days=5)),
+        AutoPayMandate(loan_id="LOAN006", customer_id="CUST006", status="Active",  mandate_type="e-NACH", bank_account_number="XXXX9012", ifsc_code="ICIC0002345", max_amount=7200.0,  activated_at=datetime.now() - timedelta(days=60), activated_by="customer", activation_channel="whatsapp", first_debit_date="2026-04-23", expiry_date="2027-04-23", last_success_date=datetime.now() - timedelta(days=10)),
+        AutoPayMandate(loan_id="LOAN009", customer_id="CUST009", status="Active",  mandate_type="UPI AutoPay", bank_account_number="XXXX3456", ifsc_code="SBIN0003456", max_amount=6500.0,  activated_at=datetime.now() - timedelta(days=15), activated_by="customer", activation_channel="app",      first_debit_date="2026-05-10", expiry_date="2027-05-10"),
+        AutoPayMandate(loan_id="LOAN013", customer_id="CUST013", status="Active",  mandate_type="e-NACH", bank_account_number="XXXX7890", ifsc_code="AXIS0004567", max_amount=9500.0,  activated_at=datetime.now() - timedelta(days=90), activated_by="officer",  activation_channel="branch",   first_debit_date="2026-04-15", expiry_date="2027-04-15", last_success_date=datetime.now() - timedelta(days=2)),
+        AutoPayMandate(loan_id="LOAN025", customer_id="CUST005", status="Pending", mandate_type="e-NACH", bank_account_number="XXXX2345", ifsc_code="HDFC0005678", max_amount=5500.0,  activated_at=None,             activated_by=None,       activation_channel=None,       first_debit_date="2026-05-20", expiry_date="2027-05-20"),
+    ]
+    db.add_all(auto_pay_mandates)
+    db.flush()
+    
+    # Create some bounce prevention actions (mock campaigns)
+    prevention_actions = [
+        BouncePreventionAction(loan_id="LOAN003", customer_id="CUST003", action_type="whatsapp",      risk_level_at_trigger="High",   recommended_by="AI", message_content="Enable auto-pay to avoid penalties", triggered_at=datetime.now() - timedelta(days=2), executed_at=datetime.now() - timedelta(days=2), status="sent",      customer_response="opened",  bounce_prevented=0),
+        BouncePreventionAction(loan_id="LOAN005", customer_id="CUST005", action_type="voice_call",    risk_level_at_trigger="High",   recommended_by="AI", message_content="Officer call regarding EMI bounce risk", triggered_at=datetime.now() - timedelta(days=5), executed_at=datetime.now() - timedelta(days=5), status="delivered", customer_response="enrolled", bounce_prevented=1, response_time_hours=12.5),
+        BouncePreventionAction(loan_id="LOAN012", customer_id="CUST012", action_type="auto_pay_link", risk_level_at_trigger="High",   recommended_by="AI", message_content="Click here to enable auto-pay: https://...", triggered_at=datetime.now() - timedelta(days=7), executed_at=datetime.now() - timedelta(days=7), status="sent",      customer_response="clicked", bounce_prevented=0),
+        BouncePreventionAction(loan_id="LOAN018", customer_id="CUST018", action_type="sms",           risk_level_at_trigger="Medium", recommended_by="AI", message_content="Reminder: EMI due in 3 days. Enable auto-pay?", triggered_at=datetime.now() - timedelta(days=1), executed_at=datetime.now() - timedelta(days=1), status="delivered", customer_response="ignored",  bounce_prevented=0),
+        BouncePreventionAction(loan_id="LOAN027", customer_id="CUST027", action_type="whatsapp",      risk_level_at_trigger="Medium", recommended_by="Officer", message_content="We noticed your payment pattern. Would you like auto-pay?", triggered_at=datetime.now() - timedelta(days=10), executed_at=datetime.now() - timedelta(days=10), status="sent",      customer_response="enrolled", bounce_prevented=1, response_time_hours=24.0),
+    ]
+    db.add_all(prevention_actions)
+
+    print(f"✅ Bounce prevention data seeded: {len(bounce_profiles)} risk profiles, {len(auto_pay_mandates)} mandates, {len(prevention_actions)} actions")
 
     db.commit()
     db.close()

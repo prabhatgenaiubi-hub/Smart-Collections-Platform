@@ -9,13 +9,14 @@ const riskColors = {
 
 export default function CustomerSearch() {
   const [filters, setFilters] = useState({
-    loan_id: '', customer_id: '', name: '', loan_type: '', risk_segment: '',
+    loan_id: '', customer_id: '', name: '', loan_type: '', risk_segment: '', bounce_risk_level: '',
   });
   const [results,   setResults]   = useState([]);
   const [loading,   setLoading]   = useState(false);
   const [searched,  setSearched]  = useState(false);
   const [error,     setError]     = useState('');
   const [loanModal, setLoanModal] = useState(null);
+  const [bounceRisks, setBounceRisks] = useState({}); // { loanId: riskData }
 
   // AND = multiple fields filled; OR = single field filled
   const filledCount = Object.values(filters).filter(v => v.trim() !== '').length;
@@ -60,6 +61,21 @@ export default function CustomerSearch() {
 
       setResults(data);
       setSearched(true);
+
+      // Extract bounce risk data from search results (backend now includes it!)
+      const risks = {};
+      for (const row of data) {
+        if (row.bounce_risk_level) {
+          risks[row.loan_id] = {
+            risk_level: row.bounce_risk_level,
+            risk_score: row.bounce_risk_score,
+            next_emi_bounce_probability: row.bounce_probability,
+            auto_pay_enabled: row.auto_pay_enabled
+          };
+        }
+      }
+      setBounceRisks(risks);
+
     } catch (err) {
       setError(err.response?.data?.detail || 'Search failed.');
     } finally {
@@ -68,10 +84,11 @@ export default function CustomerSearch() {
   };
 
   const handleClear = () => {
-    setFilters({ loan_id: '', customer_id: '', name: '', loan_type: '', risk_segment: '' });
+    setFilters({ loan_id: '', customer_id: '', name: '', loan_type: '', risk_segment: '', bounce_risk_level: '' });
     setResults([]);
     setSearched(false);
     setError('');
+    setBounceRisks({});
   };
 
   return (
@@ -100,6 +117,19 @@ export default function CustomerSearch() {
               <select
                 value={filters.risk_segment}
                 onChange={e => setFilters(f => ({ ...f, risk_segment: e.target.value }))}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value=""></option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Bounce Risk Level</label>
+              <select
+                value={filters.bounce_risk_level}
+                onChange={e => setFilters(f => ({ ...f, bounce_risk_level: e.target.value }))}
                 className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value=""></option>
@@ -152,46 +182,61 @@ export default function CustomerSearch() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50">
                   <tr>
-                    {['Loan ID', 'Customer ID', 'Name', 'Loan Type', 'Loan Amount', 'Outstanding', 'Risk', 'DPD', 'Rec. Channel', ''].map(h => (
+                    {['Loan ID', 'Customer ID', 'Name', 'Loan Type', 'Outstanding', 'Risk Segment', 'Bounce Risk', 'DPD', 'Auto-Pay', ''].map(h => (
                       <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {results.map((row) => (
-                    <tr key={row.loan_id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => setLoanModal(row.loan_id)}
-                          className="text-blue-600 font-semibold hover:underline"
-                        >
-                          {row.loan_id}
-                        </button>
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">{row.customer_id}</td>
-                      <td className="px-4 py-3 font-medium text-gray-800">{row.customer_name}</td>
-                      <td className="px-4 py-3 text-gray-600">{row.loan_type}</td>
-                      <td className="px-4 py-3 text-gray-700">₹{row.loan_amount?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3 text-gray-700">₹{row.outstanding_balance?.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${riskColors[row.risk_segment] || 'bg-gray-100 text-gray-500'}`}>
-                          {row.risk_segment}
-                        </span>
-                      </td>
-                      <td className={`px-4 py-3 font-semibold ${row.days_past_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {row.days_past_due}
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">{row.recommended_channel}</td>
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => setLoanModal(row.loan_id)}
-                          className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-xl font-medium"
-                        >
-                          View →
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {results.map((row) => {
+                    const bounceRisk = bounceRisks[row.loan_id];
+                    return (
+                      <tr key={row.loan_id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => setLoanModal(row.loan_id)}
+                            className="text-blue-600 font-semibold hover:underline"
+                          >
+                            {row.loan_id}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 text-gray-600">{row.customer_id}</td>
+                        <td className="px-4 py-3 font-medium text-gray-800">{row.customer_name}</td>
+                        <td className="px-4 py-3 text-gray-600">{row.loan_type}</td>
+                        <td className="px-4 py-3 text-gray-700">₹{row.outstanding_balance?.toLocaleString('en-IN')}</td>
+                        <td className="px-4 py-3">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${riskColors[row.risk_segment] || 'bg-gray-100 text-gray-500'}`}>
+                            {row.risk_segment}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {bounceRisk ? (
+                            <BounceRiskBadgeMini risk={bounceRisk} />
+                          ) : (
+                            <span className="text-xs text-gray-400">Loading...</span>
+                          )}
+                        </td>
+                        <td className={`px-4 py-3 font-semibold ${row.days_past_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          {row.days_past_due}
+                        </td>
+                        <td className="px-4 py-3">
+                          {bounceRisk?.auto_pay_enabled ? (
+                            <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-semibold">✓ Active</span>
+                          ) : (
+                            <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => setLoanModal(row.loan_id)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-xl font-medium"
+                          >
+                            View →
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -209,6 +254,8 @@ function LoanDetailModal({ loanId, onClose }) {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
+  const [bounceRisk, setBounceRisk] = useState(null);
+  const [loadingBounceRisk, setLoadingBounceRisk] = useState(true);
 
   useEffect(() => {
     setData(null);
@@ -221,6 +268,13 @@ function LoanDetailModal({ loanId, onClose }) {
         setError(err.response?.data?.detail || 'Failed to load loan details. Please try again.');
       })
       .finally(() => setLoading(false));
+    
+    // Fetch bounce risk
+    setLoadingBounceRisk(true);
+    api.get(`/bounce-prevention/loans/${loanId}/risk`)
+      .then(r => setBounceRisk(r.data))
+      .catch(err => console.error('Failed to fetch bounce risk:', err))
+      .finally(() => setLoadingBounceRisk(false));
   }, [loanId]);
 
   const riskMap = { High: 'bg-red-100 text-red-700', Medium: 'bg-yellow-100 text-yellow-700', Low: 'bg-green-100 text-green-700' };
@@ -276,6 +330,50 @@ function LoanDetailModal({ loanId, onClose }) {
             <p className="text-gray-400 text-center py-8">No data available for this loan.</p>
           ) : (
             <>
+              {/* ── Bounce Prevention Section ── */}
+              {!loadingBounceRisk && bounceRisk && (
+                <div>
+                  <p className="text-xs font-semibold text-orange-600 uppercase tracking-wide mb-2">🚨 Bounce Prevention & Payment Assurance</p>
+                  <div className="bg-gradient-to-r from-orange-50 to-red-50 rounded-xl p-4 border border-orange-200">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <BounceRiskBadge risk={bounceRisk} />
+                        {bounceRisk.auto_pay_enabled && (
+                          <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold flex items-center gap-1">
+                            ✓ Auto-Pay Active
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-gray-600">Risk Score</p>
+                        <p className="text-2xl font-bold text-orange-600">{bounceRisk.risk_score}</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <MiniDetail label="Bounce Probability" value={`${(bounceRisk.next_emi_bounce_probability * 100).toFixed(1)}%`} />
+                      <MiniDetail label="Predicted Bounce Date" value={bounceRisk.predicted_bounce_date || '—'} />
+                    </div>
+                    <div className="bg-white/70 rounded-lg p-3">
+                      <p className="text-xs font-semibold text-gray-700 mb-1">Recommended Action:</p>
+                      <p className="text-sm text-gray-800">{bounceRisk.recommended_action}</p>
+                    </div>
+                    {bounceRisk.factors && (
+                      <div className="mt-3 bg-white/70 rounded-lg p-3">
+                        <p className="text-xs font-semibold text-gray-700 mb-2">Risk Factors:</p>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          {Object.entries(bounceRisk.factors).map(([key, value]) => (
+                            <div key={key} className="flex justify-between">
+                              <span className="text-gray-600">{key.replace(/_/g, ' ')}:</span>
+                              <span className="font-semibold text-gray-800">{value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* ── Loan Details ── */}
               <div>
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Loan Details</p>
@@ -340,6 +438,16 @@ function LoanDetailModal({ loanId, onClose }) {
                   <p className="text-xs font-semibold text-green-600 uppercase tracking-wide mb-2">🤖 AI Recommendation</p>
                   <div className="bg-green-50 rounded-xl p-4">
                     <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{data.llm_recommendation}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Bounce Prevention Recommendation ── */}
+              {data.bounce_prevention_recommendation && (
+                <div>
+                  <p className="text-xs font-semibold text-orange-600 uppercase tracking-wide mb-2">🔒 Auto-Pay Recommendation</p>
+                  <div className="bg-orange-50 rounded-xl p-4 border border-orange-200">
+                    <p className="text-sm text-gray-800 leading-relaxed font-medium">{data.bounce_prevention_recommendation}</p>
                   </div>
                 </div>
               )}
@@ -448,5 +556,48 @@ function SearchInput({ label, field, filters, setFilters, placeholder }) {
         className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
     </div>
+  );
+}
+
+function BounceRiskBadge({ risk }) {
+  if (!risk) return null;
+  
+  const levelMap = {
+    High:   { bg: 'bg-red-100', text: 'text-red-700', icon: '🚨', border: 'border-red-200' },
+    Medium: { bg: 'bg-yellow-100', text: 'text-yellow-700', icon: '⚠️', border: 'border-yellow-200' },
+    Low:    { bg: 'bg-green-100', text: 'text-green-700', icon: '✅', border: 'border-green-200' },
+  };
+
+  const style = levelMap[risk.risk_level] || levelMap.Low;
+  
+  return (
+    <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full border ${style.bg} ${style.text} ${style.border}`}>
+      <span className="text-sm">{style.icon}</span>
+      <div className="flex flex-col">
+        <span className="text-xs font-bold leading-tight">{risk.risk_level} Bounce Risk</span>
+        <span className="text-[10px] leading-tight opacity-80">
+          {(risk.next_emi_bounce_probability * 100).toFixed(0)}% probability
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function BounceRiskBadgeMini({ risk }) {
+  if (!risk) return null;
+  
+  const levelMap = {
+    High:   { bg: 'bg-red-100', text: 'text-red-700', icon: '🚨' },
+    Medium: { bg: 'bg-yellow-100', text: 'text-yellow-700', icon: '⚠️' },
+    Low:    { bg: 'bg-green-100', text: 'text-green-700', icon: '✅' },
+  };
+
+  const style = levelMap[risk.risk_level] || levelMap.Low;
+  
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${style.bg} ${style.text}`}>
+      <span>{style.icon}</span>
+      <span>{risk.risk_level}</span>
+    </span>
   );
 }

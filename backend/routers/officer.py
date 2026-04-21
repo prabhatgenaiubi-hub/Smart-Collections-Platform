@@ -44,8 +44,9 @@ router = APIRouter(prefix="/officer", tags=["Bank Officer"])
 # Helper: Build Loan Summary Dict
 # ─────────────────────────────────────────────
 
-def build_loan_summary(loan: Loan, customer: Customer) -> dict:
-    return {
+def build_loan_summary(loan: Loan, customer: Customer, db: Session = None) -> dict:
+    """Build loan summary with optional bounce risk data."""
+    result = {
         "loan_id":             loan.loan_id,
         "customer_id":         customer.customer_id,
         "customer_name":       customer.customer_name,
@@ -59,6 +60,32 @@ def build_loan_summary(loan: Loan, customer: Customer) -> dict:
         "self_cure_probability": loan.self_cure_probability,
         "recommended_channel": loan.recommended_channel,
     }
+    
+    # Include bounce risk data if db session provided
+    if db:
+        from backend.db.models import BounceRiskProfile, AutoPayMandate
+        
+        bounce_profile = db.query(BounceRiskProfile).filter(
+            BounceRiskProfile.loan_id == loan.loan_id
+        ).first()
+        
+        auto_pay = db.query(AutoPayMandate).filter(
+            AutoPayMandate.loan_id == loan.loan_id,
+            AutoPayMandate.status == "Active"
+        ).first()
+        
+        if bounce_profile:
+            result["bounce_risk_level"] = bounce_profile.risk_level
+            result["bounce_risk_score"] = bounce_profile.risk_score
+            result["bounce_probability"] = bounce_profile.next_emi_bounce_probability
+            result["auto_pay_enabled"] = auto_pay is not None
+        else:
+            result["bounce_risk_level"] = None
+            result["bounce_risk_score"] = None
+            result["bounce_probability"] = None
+            result["auto_pay_enabled"] = False
+    
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -148,6 +175,17 @@ def get_dashboard(
     # ── Overdue loans breakdown ───────────────────────────────────
     overdue_loans = [l for l in all_loans if l.days_past_due > 0]
 
+    # ── Bounce Risk Statistics ───────────────────────────────────
+    from backend.db.models import BounceRiskProfile, AutoPayMandate
+    bounce_profiles = db.query(BounceRiskProfile).all()
+    
+    high_bounce_risk = [p for p in bounce_profiles if p.risk_level == "High"]
+    medium_bounce_risk = [p for p in bounce_profiles if p.risk_level == "Medium"]
+    low_bounce_risk = [p for p in bounce_profiles if p.risk_level == "Low"]
+    
+    active_autopay = db.query(AutoPayMandate).filter(AutoPayMandate.status == "Active").count()
+    autopay_rate = (active_autopay / len(all_loans) * 100) if all_loans else 0
+
     return {
         "summary": {
             "total_borrowers":          total_borrowers,
@@ -163,6 +201,12 @@ def get_dashboard(
             "self_cure_rate":           round(avg_self_cure * 100, 1),
             "pending_grace_requests":   pending_grace,
             "pending_restructure_requests": pending_restructure,
+            # Bounce Prevention Stats
+            "high_bounce_risk_customers":   len(high_bounce_risk),
+            "medium_bounce_risk_customers": len(medium_bounce_risk),
+            "low_bounce_risk_customers":    len(low_bounce_risk),
+            "autopay_enrollment_rate":      round(autopay_rate, 1),
+            "active_autopay_mandates":      active_autopay,
         },
         "charts": {
             "risk_distribution":    risk_distribution,
@@ -182,6 +226,7 @@ def search_customers(
     name:         Optional[str] = Query(None, description="Search by Customer Name"),
     loan_type:    Optional[str] = Query(None, description="Search by Loan Type"),
     risk_segment: Optional[str] = Query(None, description="Search by Risk Segment"),
+    bounce_risk_level: Optional[str] = Query(None, description="Search by Bounce Risk Level (High/Medium/Low)"),
     current_user: dict          = Depends(get_current_officer),
     db: Session                 = Depends(get_db)
 ):
@@ -191,10 +236,10 @@ def search_customers(
     At least one search parameter must be provided.
     Returns a list of matching loan records with customer details.
     """
-    if not any([loan_id, customer_id, name, loan_type, risk_segment]):
+    if not any([loan_id, customer_id, name, loan_type, risk_segment, bounce_risk_level]):
         raise HTTPException(
             status_code = 400,
-            detail      = "At least one search parameter is required: loan_id, customer_id, name, loan_type, or risk_segment."
+            detail      = "At least one search parameter is required: loan_id, customer_id, name, loan_type, risk_segment, or bounce_risk_level."
         )
 
     # ── Build filter conditions (OR logic) ────────────────────────
@@ -228,25 +273,37 @@ def search_customers(
         conditions.append(Loan.customer_id.in_(customer_ids_from_search))
 
     # ── Execute query ─────────────────────────────────────────────
-    if not conditions:
-        return {"results": [], "total": 0}
+    if not conditions and not bounce_risk_level:
+        # If only bounce_risk_level is provided, get all loans
+        if bounce_risk_level:
+            matched_loans = db.query(Loan).order_by(Loan.days_past_due.desc()).limit(200).all()
+        else:
+            return {"results": [], "total": 0}
+    else:
+        matched_loans = (
+            db.query(Loan)
+            .filter(or_(*conditions)) if conditions else db.query(Loan)
+        ).order_by(Loan.days_past_due.desc()).limit(200).all()
 
-    matched_loans = (
-        db.query(Loan)
-        .filter(or_(*conditions))
-        .order_by(Loan.days_past_due.desc())
-        .limit(50)
-        .all()
-    )
+    # ── Filter by bounce risk level if specified ─────────────────
+    if bounce_risk_level:
+        from backend.db.models import BounceRiskProfile
+        # Get loan IDs with matching bounce risk level
+        bounce_profiles = db.query(BounceRiskProfile).filter(
+            BounceRiskProfile.risk_level == bounce_risk_level
+        ).all()
+        bounce_loan_ids = {p.loan_id for p in bounce_profiles}
+        # Filter matched loans to only those with matching bounce risk
+        matched_loans = [loan for loan in matched_loans if loan.loan_id in bounce_loan_ids]
 
     # ── Build results ─────────────────────────────────────────────
     results = []
-    for loan in matched_loans:
+    for loan in matched_loans[:50]:  # Limit to 50 results
         customer = db.query(Customer).filter(
             Customer.customer_id == loan.customer_id
         ).first()
         if customer:
-            results.append(build_loan_summary(loan, customer))
+            results.append(build_loan_summary(loan, customer, db))
 
     return {
         "results": results,
@@ -418,6 +475,22 @@ def get_loan_intelligence(
         for rr in restructure_requests
     ]
 
+    # ── Bounce Prevention Recommendation ─────────────────────────
+    from backend.db.models import BounceRiskProfile, AutoPayMandate
+    bounce_profile = db.query(BounceRiskProfile).filter(BounceRiskProfile.loan_id == loan_id).first()
+    auto_pay = db.query(AutoPayMandate).filter(AutoPayMandate.loan_id == loan_id).first()
+    
+    bounce_recommendation = None
+    if bounce_profile and not auto_pay:
+        if bounce_profile.risk_level == "High":
+            bounce_recommendation = f"⚠️ URGENT: High EMI bounce risk ({bounce_profile.risk_score}/100). Recommend enabling Auto-Pay (e-NACH) immediately. Call customer to enroll."
+        elif bounce_profile.risk_level == "Medium":
+            bounce_recommendation = f"⚠️ Medium EMI bounce risk ({bounce_profile.risk_score}/100). Send Auto-Pay enrollment link via WhatsApp."
+        elif bounce_profile.risk_level == "Low":
+            bounce_recommendation = f"✅ Low EMI bounce risk ({bounce_profile.risk_score}/100). Monitor payment behavior."
+    elif auto_pay and auto_pay.status == "Active":
+        bounce_recommendation = "✅ Auto-Pay is active. EMI bounce risk mitigated."
+
     return {
         # ── Loan Details ──────────────────────────────────────────
         "loan": {
@@ -467,6 +540,9 @@ def get_loan_intelligence(
 
         # ── LLM Recommendation ────────────────────────────────────
         "llm_recommendation":  llm_recommendation,
+
+        # ── Bounce Prevention Recommendation ──────────────────────
+        "bounce_prevention_recommendation": bounce_recommendation,
 
         # ── Policy Validation ─────────────────────────────────────
         "policy_validation":   policy_validation,
@@ -930,7 +1006,7 @@ def get_customer_for_officer(
 
     loans = db.query(Loan).filter(Loan.customer_id == customer_id).all()
 
-    loan_summaries = [build_loan_summary(l, customer) for l in loans]
+    loan_summaries = [build_loan_summary(l, customer, db) for l in loans]
 
     total_outstanding = sum(l.outstanding_balance for l in loans)
     high_risk_loans   = [l for l in loans if l.risk_segment == "High"]

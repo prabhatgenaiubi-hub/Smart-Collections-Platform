@@ -31,6 +31,7 @@ const OBJECTIVES = [
   { value: 'overdue',               label: '⚠️ Overdue Notice' },
   { value: 'grace_followup',        label: '⏱ Grace Period Follow-up' },
   { value: 'restructure_followup',  label: '🔄 Restructure Follow-up' },
+  { value: 'autopay_enrollment',    label: '🔒 Auto-Pay Enrollment (High Bounce Risk)' },
 ];
 
 const STATUS_STYLES = {
@@ -196,9 +197,7 @@ export default function DigitalOutreach() {
     }
   };
 
-  // ─────────────────────────────────────────────
-  // Send (HITL — uses editedMessage, not ai_draft)
-  // ─────────────────────────────────────────────
+  // ── Send (HITL — uses editedMessage, not ai_draft) ───────────
   const handleSend = async () => {
     if (!generatedData || !editedMessage.trim()) return;
     setSending(true);
@@ -225,6 +224,59 @@ export default function DigitalOutreach() {
       );
     } finally {
       setSending(false);
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // Bulk Auto-Pay Campaign for High Bounce Risk
+  // ─────────────────────────────────────────────
+  const [bulkCampaignRunning, setBulkCampaignRunning] = useState(false);
+  const [bulkCampaignResult, setBulkCampaignResult] = useState(null);
+
+  const handleBulkAutoPayCampaign = async () => {
+    if (!confirm('Send Auto-Pay enrollment messages to all High Bounce Risk customers via WhatsApp?')) return;
+    
+    setBulkCampaignRunning(true);
+    setBulkCampaignResult(null);
+    
+    try {
+      // Get all high bounce risk loans
+      const riskRes = await api.get('/bounce-prevention/loans/at-risk', { params: { risk_level: 'High', limit: 100 } });
+      const highRiskLoans = riskRes.data.loans || [];
+      
+      if (highRiskLoans.length === 0) {
+        setBulkCampaignResult({ success: true, message: 'No high bounce risk customers found.', count: 0 });
+        setBulkCampaignRunning(false);
+        return;
+      }
+      
+      // Trigger outreach for all high risk loans
+      const loanIds = highRiskLoans.filter(l => !l.auto_pay_enabled).map(l => l.loan_id);
+      
+      if (loanIds.length === 0) {
+        setBulkCampaignResult({ success: true, message: 'All high-risk customers already have auto-pay enabled.', count: 0 });
+        setBulkCampaignRunning(false);
+        return;
+      }
+      
+      const outreachRes = await api.post('/bounce-prevention/outreach/trigger', {
+        loan_ids: loanIds,
+        channel: 'whatsapp',
+        message_template: null  // Will use default auto-pay message
+      });
+      
+      setBulkCampaignResult({
+        success: true,
+        message: `Auto-Pay enrollment messages sent to ${outreachRes.data.actions.length} high bounce risk customers.`,
+        count: outreachRes.data.actions.length
+      });
+    } catch (err) {
+      setBulkCampaignResult({
+        success: false,
+        message: err.response?.data?.detail || 'Bulk campaign failed. Please try again.'
+      });
+    } finally {
+      setBulkCampaignRunning(false);
     }
   };
 
@@ -260,15 +312,35 @@ export default function DigitalOutreach() {
             Generate AI-personalised messages, review &amp; edit, then send via WhatsApp or Email.
           </p>
         </div>
-        {selectedCustomer && (
+        <div className="flex items-center gap-3">
           <button
-            onClick={handleReset}
-            className="text-sm text-slate-500 hover:text-red-600 transition-colors underline"
+            onClick={handleBulkAutoPayCampaign}
+            disabled={bulkCampaignRunning}
+            className="px-4 py-2 bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 disabled:from-gray-300 disabled:to-gray-400 text-white text-sm font-semibold rounded-xl transition-all shadow-sm hover:shadow"
           >
-            ↩ Start over
+            {bulkCampaignRunning ? '⏳ Sending...' : '🔒 Bulk Auto-Pay Campaign'}
           </button>
-        )}
+          {selectedCustomer && (
+            <button
+              onClick={handleReset}
+              className="text-sm text-slate-500 hover:text-red-600 transition-colors underline"
+            >
+              ↩ Start over
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* ── Bulk Campaign Result ── */}
+      {bulkCampaignResult && (
+        <div className={`px-4 py-3 rounded-xl text-sm font-medium ${
+          bulkCampaignResult.success 
+            ? 'bg-green-50 text-green-700 border border-green-200' 
+            : 'bg-red-50 text-red-700 border border-red-200'
+        }`}>
+          {bulkCampaignResult.success ? '✅' : '❌'} {bulkCampaignResult.message}
+        </div>
+      )}
 
       {/* ── Step 1: Customer Search ── */}
       <Section title="Step 1 — Select Customer" step={1}>
