@@ -418,9 +418,20 @@ def generate_video_with_did(text: str, language: str) -> str:
         "Content-Type": "application/json"
     }
     
-    # Avatar image (you can customize this)
-    # Using a professional female avatar suitable for banking
-    avatar_url = "https://d-id-public-bucket.s3.amazonaws.com/alice.jpg"
+    # Professional avatar for banking/financial services
+    # Options:
+    # 1. Professional female presenter (business attire, friendly)
+    # avatar_url = "https://create-images-results.d-id.com/google-oauth2%7C112852062801826026703/upl_kYZmXDNL4MaWQWe5fuqKt/image.png"
+    
+    # 2. Professional male presenter (business suit, trustworthy)
+    # avatar_url = "https://create-images-results.d-id.com/google-oauth2%7C112852062801826026703/upl_NMqLWiQVB4iHYjCCWFwYx/image.png"
+    
+    # 3. Professional Indian female (suitable for Indian banking context)
+    avatar_url = "https://create-images-results.d-id.com/google-oauth2%7C112852062801826026703/upl_kYZmXDNL4MaWQWe5fuqKt/image.png"
+    
+    # Alternative: Use D-ID's preset presenters (more reliable)
+    # avatar_url = "amy-jcwCkr1grs"  # Professional female presenter
+    # avatar_url = "noah-jVnRDjO_Tw"  # Professional male presenter
     
     payload = {
         "script": {
@@ -432,7 +443,12 @@ def generate_video_with_did(text: str, language: str) -> str:
         "config": {
             "fluent": True,
             "pad_audio": 0.0,
-            "stitch": True
+            "stitch": True,
+            "driver_expressions": {
+                "expressions": [
+                    {"start_frame": 0, "expression": "neutral", "intensity": 0.7}
+                ]
+            }
         }
     }
     

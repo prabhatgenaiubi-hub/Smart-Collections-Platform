@@ -29,6 +29,7 @@ export default function VideoCallAgent({ loanId, onClose }) {
 
   // Handle video playback when currentVideo changes
   useEffect(() => {
+    console.log('currentVideo state changed:', currentVideo);
     if (currentVideo && videoRef.current) {
       console.log('Video URL updated, loading:', currentVideo);
       videoRef.current.src = currentVideo;
@@ -371,22 +372,29 @@ export default function VideoCallAgent({ loanId, onClose }) {
     { code: 'ml', label: 'മലയാളം', flag: '🇮🇳' },
   ];
 
+  console.log('VideoCallAgent rendering, currentVideo:', currentVideo, 'loanId:', loanId);
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col">
         
-        {/* Header */}
-        <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-4 rounded-t-2xl flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl">📹</span>
+        {/* Header - Professional Banking Style */}
+        <div className="bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-700 text-white px-6 py-4 rounded-t-2xl flex items-center justify-between shadow-lg">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 bg-white bg-opacity-20 rounded-full flex items-center justify-center backdrop-blur-sm">
+              <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+              </svg>
+            </div>
             <div>
-              <h2 className="text-lg font-bold">AI Loan Assistant</h2>
-              <p className="text-xs opacity-90">Ask me anything about your loan</p>
+              <h2 className="text-xl font-bold tracking-tight">Banking AI Assistant</h2>
+              <p className="text-sm opacity-90 font-medium">Professional Loan Advisory Service</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
+            className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-all duration-200 hover:rotate-90"
+            title="Close"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -396,52 +404,113 @@ export default function VideoCallAgent({ loanId, onClose }) {
 
         {/* Main Content */}
         <div className="flex-1 flex overflow-hidden">
-          
-          {/* Left: Video Agent */}
-          <div className="w-1/3 bg-gradient-to-b from-gray-50 to-gray-100 p-6 flex flex-col items-center justify-center border-r">
-            <div className="relative w-full max-w-sm">
-              {/* D-ID Video Player */}
-              {currentVideo ? (
-                <div className="relative rounded-2xl overflow-hidden shadow-2xl bg-black">
-                  <video
-                    ref={videoRef}
-                    className="w-full h-auto"
-                    onEnded={handleVideoEnded}
-                    onPlay={() => setIsPlaying(true)}
-                    onPause={() => setIsPlaying(false)}
-                    playsInline
-                    controls={false}
-                  />
-                  {/* Speaking indicator overlay */}
-                  {isPlaying && videoStatus === 'playing' && (
-                    <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2">
-                      <div className="flex gap-1 bg-black bg-opacity-50 rounded-lg px-3 py-2">
-                        <div className="w-1 h-8 bg-white rounded animate-pulse"></div>
-                        <div className="w-1 h-12 bg-white rounded animate-pulse" style={{animationDelay: '0.1s'}}></div>
-                        <div className="w-1 h-10 bg-white rounded animate-pulse" style={{animationDelay: '0.2s'}}></div>
-                        <div className="w-1 h-14 bg-white rounded animate-pulse" style={{animationDelay: '0.3s'}}></div>
-                        <div className="w-1 h-8 bg-white rounded animate-pulse" style={{animationDelay: '0.4s'}}></div>
+          {/* Left: Video Agent - EXPANDED TO 60% */}
+          <div className="w-3/5 bg-gradient-to-b from-gray-50 to-gray-100 p-8 flex flex-col border-r">
+            {/* Video/Avatar Container */}
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '500px' }}>
+              {/* Default Avatar - Shows when no video */}
+              {!currentVideo ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+                  {/* Avatar Circle - Professional Woman Image */}
+                  <div 
+                    style={{
+                      width: '384px',
+                      height: '384px',
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      boxShadow: '0 20px 60px rgba(102, 126, 234, 0.4)',
+                      border: '6px solid white',
+                      flexShrink: 0,
+                      position: 'relative',
+                      overflow: 'hidden',
+                      backgroundColor: '#f3f4f6'
+                    }}
+                  >
+                    {/* Professional Woman Avatar Image */}
+                    <img 
+                      src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=400&h=400&fit=crop"
+                      alt="AI Banking Assistant"
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                        e.target.nextSibling.style.display = 'flex';
+                      }}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover',
+                        display: 'block'
+                      }}
+                    />
+                    {/* Fallback icon if image fails to load */}
+                    <div style={{
+                      display: 'none',
+                      width: '100%',
+                      height: '100%',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+                    }}>
+                      <svg 
+                        style={{ color: 'white' }}
+                        width="200" 
+                        height="200" 
+                        fill="currentColor" 
+                        viewBox="0 0 24 24"
+                      >
+                        <circle cx="12" cy="8" r="4" />
+                        <path d="M12 14c-6 0-8 3-8 6v2h16v-2c0-3-2-6-8-6z" />
+                      </svg>
+                    </div>
+                  </div>
+                  
+                  {/* Professional Label */}
+                  <div style={{ marginTop: '24px', textAlign: 'center' }}>
+                    <p style={{ fontSize: '24px', fontWeight: '600', color: '#1f2937' }}>Banking Assistant</p>
+                    <p style={{ fontSize: '18px', color: '#6b7280', marginTop: '8px' }}>AI-Powered Support</p>
+                  </div>
+                  
+                  {/* Speaking indicator when playing audio without video */}
+                  {isPlaying && (
+                    <div className="mt-4">
+                      <div className="flex gap-1 justify-center">
+                        <div className="w-1.5 h-8 bg-blue-500 rounded animate-pulse"></div>
+                        <div className="w-1.5 h-12 bg-purple-500 rounded animate-pulse" style={{animationDelay: '0.1s'}}></div>
+                        <div className="w-1.5 h-10 bg-blue-500 rounded animate-pulse" style={{animationDelay: '0.2s'}}></div>
+                        <div className="w-1.5 h-14 bg-purple-500 rounded animate-pulse" style={{animationDelay: '0.3s'}}></div>
+                        <div className="w-1.5 h-8 bg-blue-500 rounded animate-pulse" style={{animationDelay: '0.4s'}}></div>
                       </div>
                     </div>
                   )}
                 </div>
               ) : (
-                /* Fallback: Static Avatar */
-                <div className="relative">
-                  <div className="w-48 h-48 mx-auto rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-2xl">
-                    <span className="text-7xl">🤖</span>
-                  </div>
-                  {isPlaying && (
-                    <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2">
-                      <div className="flex gap-1">
-                        <div className="w-1 h-8 bg-blue-500 rounded animate-pulse"></div>
-                        <div className="w-1 h-12 bg-purple-500 rounded animate-pulse" style={{animationDelay: '0.1s'}}></div>
-                        <div className="w-1 h-10 bg-blue-500 rounded animate-pulse" style={{animationDelay: '0.2s'}}></div>
-                        <div className="w-1 h-14 bg-purple-500 rounded animate-pulse" style={{animationDelay: '0.3s'}}></div>
-                        <div className="w-1 h-8 bg-blue-500 rounded animate-pulse" style={{animationDelay: '0.4s'}}></div>
+                /* D-ID Video Player - Shows when video is ready */
+                <div className="w-full max-w-2xl">
+                  <div className="relative rounded-2xl overflow-hidden shadow-2xl bg-black">
+                    <video
+                      ref={videoRef}
+                      className="w-full h-auto"
+                      onEnded={handleVideoEnded}
+                      onPlay={() => setIsPlaying(true)}
+                      onPause={() => setIsPlaying(false)}
+                      playsInline
+                      controls={false}
+                    />
+                    {/* Speaking indicator overlay on video */}
+                    {isPlaying && videoStatus === 'playing' && (
+                      <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2">
+                        <div className="flex gap-1 bg-black bg-opacity-50 rounded-lg px-3 py-2">
+                          <div className="w-1 h-8 bg-white rounded animate-pulse"></div>
+                          <div className="w-1 h-12 bg-white rounded animate-pulse" style={{animationDelay: '0.1s'}}></div>
+                          <div className="w-1 h-10 bg-white rounded animate-pulse" style={{animationDelay: '0.2s'}}></div>
+                          <div className="w-1 h-14 bg-white rounded animate-pulse" style={{animationDelay: '0.3s'}}></div>
+                          <div className="w-1 h-8 bg-white rounded animate-pulse" style={{animationDelay: '0.4s'}}></div>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -477,8 +546,8 @@ export default function VideoCallAgent({ loanId, onClose }) {
             </div>
           </div>
 
-          {/* Right: Chat & Loan Summary */}
-          <div className="flex-1 flex flex-col">
+          {/* Right: Chat & Loan Summary - REDUCED TO 40% */}
+          <div className="w-2/5 flex flex-col">
             
             {/* Loan Summary */}
             {loanSummary && (

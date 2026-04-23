@@ -1,0 +1,1959 @@
+================================================================================
+    SMART COLLECTIONS PLATFORM - COMPREHENSIVE CODE EXPLANATION
+    Focus: GenAI, AI, Machine Learning & Intelligent Systems
+================================================================================
+
+TABLE OF CONTENTS
+=================
+1. System Overview & AI Architecture
+2. AI Agents & LangGraph Orchestration
+3. Video AI Agent with D-ID Integration
+4. Voice Input & Speech Processing
+5. LLM Integration & Reasoning
+6. Bounce Prevention - Predictive Analytics
+7. Sentiment Analysis & NLP
+8. Vector Database & Semantic Search
+9. Context Memory & Personalization
+10. Policy Guardrails & Responsible AI
+11. Frontend AI Components
+12. API Architecture & Data Flow
+13. Database Schema & AI Data Storage
+14. Deployment & Configuration
+
+================================================================================
+1. SYSTEM OVERVIEW & AI ARCHITECTURE
+================================================================================
+
+PROJECT PURPOSE:
+----------------
+The Smart Collections Platform is an AI-powered loan collections management system
+that uses multiple AI agents, large language models (LLMs), and machine learning
+to provide intelligent, personalized, and empathetic customer interactions.
+
+KEY AI TECHNOLOGIES:
+-------------------
+✓ Large Language Models (LLMs) - OpenAI GPT-4/GPT-3.5
+✓ LangGraph - Agentic AI workflow orchestration
+✓ D-ID API - AI-powered video generation with lip-sync
+✓ Sarvam AI - Multilingual speech-to-text (9 Indian languages)
+✓ Azure TTS - Text-to-speech synthesis
+✓ ChromaDB - Vector database for semantic search
+✓ Machine Learning - Bounce risk prediction algorithm
+✓ NLP - Sentiment analysis and intent classification
+
+MULTI-AGENT ARCHITECTURE:
+-------------------------
+The system uses 8 specialized AI agents orchestrated by LangGraph:
+
+1. Customer Context & Memory Agent - Retrieves borrower history
+2. Collections Intelligence Agent - Analyzes payment patterns
+3. Bounce Prevention Agent - Predicts payment failure risk
+4. Video AI Agent - Generates lip-synced video responses
+5. Multichannel Outreach Agent - Optimizes communication channels
+6. Sentiment & Interaction Analysis Agent - Analyzes customer emotions
+7. LLM Reasoning Agent - Generates intelligent responses
+8. Policy Guardrail Agent - Ensures regulatory compliance
+
+================================================================================
+2. AI AGENTS & LANGGRAPH ORCHESTRATION
+================================================================================
+
+FILE: backend/langgraph/workflow.py
+-----------------------------------
+
+LANGGRAPH CONCEPT:
+------------------
+LangGraph is a framework for building stateful, multi-agent applications with LLMs.
+It creates a directed graph where each node is an AI agent, and edges define
+the flow of information between agents.
+
+KEY COMPONENTS:
+
+A) StateGraph Definition:
+--------------------------
+class AgentState(TypedDict):
+    """Shared state across all agents"""
+    customer_id: int
+    loan_id: int
+    question: str
+    context: Dict
+    sentiment: str
+    loan_data: Dict
+    bounce_risk: Dict
+    recommendation: str
+    answer: str
+
+The AgentState is a shared memory structure that flows through all agents.
+Each agent reads from and writes to this state.
+
+B) Agent Nodes:
+---------------
+Each node in the graph is a function that processes the state:
+
+def context_agent(state: AgentState) -> AgentState:
+    """
+    AGENT 1: Customer Context & Memory Agent
+    
+    AI Concept: Information Retrieval + Vector Search
+    
+    Responsibilities:
+    - Retrieve customer profile from SQL database
+    - Fetch interaction history from vector database (ChromaDB)
+    - Build comprehensive customer context
+    """
+    customer_id = state["customer_id"]
+    
+    # SQL Query: Get structured data
+    customer = get_customer_by_id(customer_id)
+    
+    # Vector Search: Get semantic similar past interactions
+    past_interactions = vector_db.similarity_search(
+        query=state["question"],
+        filter={"customer_id": customer_id}
+    )
+    
+    state["context"] = {
+        "customer": customer,
+        "history": past_interactions
+    }
+    return state
+
+C) LangGraph Workflow:
+----------------------
+workflow = StateGraph(AgentState)
+
+# Add agent nodes
+workflow.add_node("context", context_agent)
+workflow.add_node("intelligence", collections_intelligence_agent)
+workflow.add_node("sentiment", sentiment_agent)
+workflow.add_node("llm", llm_reasoning_agent)
+workflow.add_node("guardrail", policy_guardrail_agent)
+
+# Define agent flow
+workflow.set_entry_point("context")
+workflow.add_edge("context", "intelligence")
+workflow.add_edge("intelligence", "sentiment")
+workflow.add_edge("sentiment", "llm")
+workflow.add_edge("llm", "guardrail")
+workflow.add_edge("guardrail", END)
+
+# Compile the graph
+app = workflow.compile()
+
+D) Execution Flow:
+------------------
+Customer Question → Context Agent → Intelligence Agent → Sentiment Agent 
+→ LLM Agent → Guardrail Agent → Final Answer
+
+Each agent enriches the state with more intelligence before passing to the next.
+
+================================================================================
+3. VIDEO AI AGENT WITH D-ID INTEGRATION
+================================================================================
+
+FILE: backend/routers/video_agent.py
+-------------------------------------
+
+AI CONCEPT: Generative AI for Talking Avatar Videos
+----------------------------------------------------
+
+D-ID is a generative AI platform that creates realistic talking avatar videos
+from static images and audio/text input. It uses deep learning models for:
+- Facial animation synthesis
+- Lip-sync generation
+- Head pose estimation
+- Facial expression control
+
+A) Video Generation Workflow:
+------------------------------
+
+def generate_video_with_did(text: str, language: str) -> str:
+    """
+    AI Pipeline: Text → Speech → Lip-Synced Video
+    
+    Steps:
+    1. Get voice configuration for language (multilingual)
+    2. Create D-ID payload with avatar and text
+    3. POST to D-ID API to start video generation
+    4. Poll for video completion (async generation)
+    5. Return video URL when ready
+    """
+    
+    # Step 1: Voice Configuration
+    voice_config = get_voice_id_for_language(language)
+    # Returns: {"type": "microsoft", "voice_id": "hi-IN-SwaraNeural"}
+    
+    # Step 2: Avatar Configuration
+    avatar_url = "https://create-images-results.d-id.com/.../image.png"
+    # Professional Indian female avatar
+    
+    # Step 3: D-ID API Payload
+    payload = {
+        "script": {
+            "type": "text",
+            "input": text,  # LLM-generated answer
+            "provider": voice_config  # Azure TTS
+        },
+        "source_url": avatar_url,  # Avatar image
+        "config": {
+            "fluent": True,  # Natural speech flow
+            "pad_audio": 0.0,  # No silence padding
+            "stitch": True,  # Smooth transitions
+            "driver_expressions": {
+                "expressions": [
+                    {"start_frame": 0, "expression": "neutral", "intensity": 0.7}
+                ]
+            }
+        }
+    }
+    
+    # Step 4: API Call
+    response = requests.post(
+        "https://api.d-id.com/talks",
+        headers={"Authorization": f"Basic {D_ID_API_KEY}"},
+        json=payload
+    )
+    
+    talk_id = response.json()["id"]
+    
+    # Step 5: Polling for Completion
+    while True:
+        status_response = requests.get(
+            f"https://api.d-id.com/talks/{talk_id}",
+            headers={"Authorization": f"Basic {D_ID_API_KEY}"}
+        )
+        
+        status = status_response.json()["status"]
+        
+        if status == "done":
+            video_url = status_response.json()["result_url"]
+            return video_url
+        elif status == "error":
+            return None
+        
+        time.sleep(2)  # Wait 2 seconds before next poll
+
+B) Multilingual Voice Support:
+-------------------------------
+
+def get_voice_id_for_language(language: str) -> dict:
+    """
+    AI Concept: Multilingual TTS (Text-to-Speech)
+    
+    Supports 9 languages with natural-sounding voices from Azure TTS
+    """
+    voices = {
+        "en": {"type": "microsoft", "voice_id": "en-US-JennyNeural"},
+        "hi": {"type": "microsoft", "voice_id": "hi-IN-SwaraNeural"},
+        "ta": {"type": "microsoft", "voice_id": "ta-IN-PallaviNeural"},
+        "te": {"type": "microsoft", "voice_id": "te-IN-ShrutiNeural"},
+        "kn": {"type": "microsoft", "voice_id": "kn-IN-SapnaNeural"},
+        "ml": {"type": "microsoft", "voice_id": "ml-IN-SobhanaNeural"},
+        "bn": {"type": "microsoft", "voice_id": "bn-IN-TanishaaNeural"},
+        "gu": {"type": "microsoft", "voice_id": "gu-IN-DhwaniNeural"},
+        "mr": {"type": "microsoft", "voice_id": "mr-IN-AarohiNeural"}
+    }
+    return voices.get(language, voices["en"])
+
+C) Complete Video API Endpoint:
+--------------------------------
+
+@router.post("/video-agent/ask")
+async def video_agent_ask(request: VideoAgentRequest, user=Depends(get_current_user)):
+    """
+    AI Pipeline: Question → LLM Reasoning → Video Generation
+    
+    Flow:
+    1. Retrieve loan context
+    2. LLM generates answer (GPT-4)
+    3. Translate to selected language (if needed)
+    4. Generate lip-synced video with D-ID
+    5. Fallback to browser TTS if D-ID unavailable
+    """
+    
+    # Step 1: Get Loan Context
+    loan = get_loan_by_id(request.loan_id)
+    context = build_loan_context(loan)
+    
+    # Step 2: LLM Answer Generation
+    llm_prompt = f"""
+    You are an AI banking assistant helping a customer with their loan.
+    
+    Customer Question: {request.question}
+    
+    Loan Context:
+    - Type: {loan.loan_type}
+    - Outstanding: ₹{loan.outstanding_amount:,}
+    - EMI: ₹{loan.emi_amount:,}
+    - Next Due: {loan.next_payment_date}
+    
+    Provide a helpful, empathetic answer in 2-3 sentences.
+    """
+    
+    answer = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a professional banking assistant."},
+            {"role": "user", "content": llm_prompt}
+        ]
+    ).choices[0].message.content
+    
+    # Step 3: Generate Video (if D-ID API key available)
+    video_url = None
+    if os.getenv("DID_API_KEY"):
+        video_url = generate_video_with_did(answer, request.language)
+    
+    # Step 4: Return Response
+    return {
+        "answer": answer,
+        "video_url": video_url,
+        "timestamp": datetime.now()
+    }
+
+================================================================================
+4. VOICE INPUT & SPEECH PROCESSING
+================================================================================
+
+FILE: backend/routers/video_agent.py (transcribe_audio endpoint)
+-----------------------------------------------------------------
+
+AI CONCEPT: Automatic Speech Recognition (ASR)
+-----------------------------------------------
+
+Converts spoken audio to text using Sarvam AI's Saaras:v3 model, which is
+optimized for Indian languages and accents.
+
+A) Audio Processing Pipeline:
+------------------------------
+
+@router.post("/video-agent/transcribe-audio")
+async def transcribe_audio(audio: UploadFile, user=Depends(get_current_user)):
+    """
+    AI Pipeline: Audio → Text + Language Detection
+    
+    Steps:
+    1. Receive audio from browser (WebM/OGG format)
+    2. Convert to WAV format (ffmpeg)
+    3. Split into 29-second chunks (Sarvam 30s limit)
+    4. Transcribe each chunk with Sarvam AI
+    5. Combine transcripts
+    6. Detect language
+    """
+    
+    # Step 1: Save uploaded audio
+    temp_audio_path = f"/tmp/{uuid.uuid4()}.webm"
+    with open(temp_audio_path, "wb") as f:
+        f.write(await audio.read())
+    
+    # Step 2: Convert to WAV (CRITICAL for Sarvam AI)
+    wav_path = temp_audio_path.replace(".webm", ".wav")
+    subprocess.run([
+        "ffmpeg", "-i", temp_audio_path,
+        "-ar", "16000",  # 16kHz sampling rate
+        "-ac", "1",      # Mono channel
+        "-f", "wav",     # WAV format
+        wav_path
+    ])
+    
+    # Step 3: Load audio and get duration
+    audio_data, sample_rate = librosa.load(wav_path, sr=16000)
+    duration = librosa.get_duration(y=audio_data, sr=sample_rate)
+    
+    # Step 4: Split into chunks (29 seconds each)
+    chunk_duration = 29  # seconds
+    num_chunks = int(duration / chunk_duration) + 1
+    
+    transcripts = []
+    for i in range(num_chunks):
+        start_sample = i * chunk_duration * sample_rate
+        end_sample = min((i + 1) * chunk_duration * sample_rate, len(audio_data))
+        
+        chunk_data = audio_data[start_sample:end_sample]
+        chunk_path = f"/tmp/chunk_{i}.wav"
+        
+        soundfile.write(chunk_path, chunk_data, sample_rate)
+        
+        # Step 5: Transcribe with Sarvam AI
+        client = SarvamAI(api_key=os.getenv("SARVAM_API_KEY"))
+        
+        with open(chunk_path, "rb") as f:
+            response = client.speech_to_text.transcribe(
+                file=f,
+                model="saaras:v3",  # Latest model
+                language_code="auto"  # Auto-detect language
+            )
+        
+        transcripts.append(response.transcript)
+    
+    # Step 6: Combine and detect language
+    full_transcript = " ".join(transcripts)
+    detected_language = response.language_code  # hi, en, ta, etc.
+    
+    return {
+        "text": full_transcript,
+        "language": detected_language,
+        "duration": duration
+    }
+
+B) Frontend Voice Recording:
+-----------------------------
+
+FILE: frontend/src/components/VideoCallAgent.jsx
+-------------------------------------------------
+
+const startRecording = async () => {
+    """
+    Browser API: MediaRecorder (WebRTC)
+    
+    Captures audio from microphone using Web Audio API
+    """
+    try {
+        // Request microphone access
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                sampleRate: 16000
+            } 
+        });
+        
+        // Create MediaRecorder
+        const recorder = new MediaRecorder(stream, {
+            mimeType: 'audio/webm;codecs=opus'
+        });
+        
+        const chunks = [];
+        
+        recorder.ondataavailable = (e) => {
+            chunks.push(e.data);
+        };
+        
+        recorder.onstop = async () => {
+            // Create blob from recorded chunks
+            const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+            
+            // Send to backend for transcription
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'recording.webm');
+            
+            const response = await api.post(
+                '/customer/video-agent/transcribe-audio',
+                formData,
+                {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                }
+            );
+            
+            // Use transcribed text as question
+            setQuestion(response.data.text);
+            setLanguage(response.data.language);
+        };
+        
+        recorder.start();
+        setMediaRecorder(recorder);
+        setIsRecording(true);
+        
+    } catch (error) {
+        console.error('Microphone access denied:', error);
+    }
+};
+
+================================================================================
+5. LLM INTEGRATION & REASONING
+================================================================================
+
+FILE: backend/agents/llm_reasoning_agent.py
+--------------------------------------------
+
+AI CONCEPT: Large Language Model (LLM) Reasoning
+-------------------------------------------------
+
+Uses OpenAI GPT-4 to generate intelligent, context-aware responses to customer
+queries. The LLM acts as the "brain" of the system, combining all information
+gathered by previous agents.
+
+A) LLM Prompt Engineering:
+---------------------------
+
+def llm_reasoning_agent(state: dict) -> dict:
+    """
+    AI Agent: LLM-based Reasoning & Response Generation
+    
+    Technique: Few-shot prompting with context enrichment
+    """
+    
+    # Extract context from previous agents
+    customer = state["context"]["customer"]
+    loan = state["loan_data"]
+    sentiment = state["sentiment"]
+    bounce_risk = state.get("bounce_risk", {})
+    
+    # Build comprehensive prompt
+    system_prompt = """
+    You are an AI-powered collections assistant for a banking institution.
+    
+    Your role:
+    - Provide helpful, empathetic responses to loan-related questions
+    - Understand customer financial difficulties with compassion
+    - Offer practical solutions (grace periods, restructuring, auto-pay)
+    - Never be pushy or aggressive
+    - Comply with RBI guidelines for fair lending practices
+    
+    Tone: Professional, empathetic, solution-oriented
+    """
+    
+    user_prompt = f"""
+    Customer Context:
+    - Name: {customer.name}
+    - Loan Type: {loan.loan_type}
+    - Outstanding: ₹{loan.outstanding_amount:,}
+    - EMI Amount: ₹{loan.emi_amount:,}
+    - Next Payment: {loan.next_payment_date}
+    - Days Past Due: {loan.days_past_due}
+    - Payment History: {loan.payments_made}/{loan.total_payments} payments made
+    
+    Sentiment Analysis: {sentiment}
+    Bounce Risk: {bounce_risk.get('risk_category', 'N/A')}
+    
+    Customer Question: "{state['question']}"
+    
+    Provide a helpful answer in 2-3 sentences. If the customer is distressed,
+    offer support and solutions. If they ask about grace periods or restructuring,
+    explain the options clearly.
+    """
+    
+    # Call OpenAI API
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        temperature=0.7,  # Balanced creativity
+        max_tokens=200,   # Concise responses
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+    )
+    
+    answer = response.choices[0].message.content
+    
+    # Update state
+    state["answer"] = answer
+    return state
+
+B) Context-Aware Reasoning:
+----------------------------
+
+Example Interaction Flow:
+
+Customer Question: "I lost my job, can you give me 2 months to pay?"
+
+Agent Processing:
+1. Context Agent: Retrieves customer history (good payment record)
+2. Intelligence Agent: Analyzes loan status (3/10 payments made, ₹5L outstanding)
+3. Sentiment Agent: Detects distress, anxiety (negative sentiment)
+4. LLM Agent: Generates empathetic response
+
+LLM Output:
+"I understand you're going through a difficult time with job loss. Given your 
+good payment history, we can offer you a 60-day grace period. No penalties 
+will be charged. After this period, we can discuss loan restructuring options 
+to reduce your EMI amount. Would you like me to initiate this request?"
+
+The LLM combines:
+✓ Customer history (context)
+✓ Current loan status (data)
+✓ Emotional state (sentiment)
+✓ Company policies (knowledge)
+✓ Regulatory compliance (guardrails)
+
+C) Few-Shot Learning Examples:
+-------------------------------
+
+# Embedded in system prompt for better responses
+
+few_shot_examples = """
+Example 1:
+Q: "What is my next EMI date?"
+A: "Your next EMI of ₹14,500 is due on April 1st, 2026. You can pay online 
+through our app or set up auto-debit to avoid missing payments."
+
+Example 2:
+Q: "I can't afford this month's EMI"
+A: "I understand financial difficulties can arise. You may be eligible for a 
+one-time grace period or we can discuss restructuring your loan to reduce 
+monthly payments. Would you like to explore these options?"
+
+Example 3:
+Q: "Why are you calling me so much?"
+A: "I apologize for any inconvenience. We're here to help ensure you don't 
+miss payments and face penalties. Would you prefer to set up auto-pay or 
+receive reminders via SMS instead of calls?"
+"""
+
+================================================================================
+6. BOUNCE PREVENTION - PREDICTIVE ANALYTICS
+================================================================================
+
+FILE: analytics/bounce_predictor.py
+------------------------------------
+
+AI CONCEPT: Predictive Machine Learning Model
+----------------------------------------------
+
+Predicts the likelihood of payment failure (bounce) using a rule-based ML
+algorithm that analyzes 4 key factors.
+
+A) Bounce Risk Algorithm:
+--------------------------
+
+def calculate_bounce_risk(loan: Loan) -> dict:
+    """
+    AI Model: Multi-Factor Risk Scoring
+    
+    Technique: Weighted scoring algorithm (interpretable ML)
+    
+    Factors:
+    1. Payment History (40% weight) - Most predictive
+    2. Account Balance (30% weight) - Immediate risk
+    3. Past Bounces (20% weight) - Historical pattern
+    4. Days to EMI (10% weight) - Urgency
+    """
+    
+    risk_score = 0
+    factors = {}
+    
+    # Factor 1: Payment History Analysis (40% weight)
+    missed_payments = loan.missed_payments
+    late_payments = loan.late_payments
+    
+    payment_score = (missed_payments * 20) + (late_payments * 10)
+    risk_score += payment_score
+    factors["payment_history"] = payment_score
+    
+    # Interpretation:
+    # - Each missed payment adds 20 points (severe)
+    # - Each late payment adds 10 points (moderate)
+    
+    # Factor 2: Current Account Balance (30% weight)
+    current_balance = get_account_balance(loan.customer_id)
+    emi_amount = loan.emi_amount
+    
+    if current_balance < emi_amount:
+        balance_score = 30  # High risk: insufficient funds
+    elif current_balance < emi_amount * 1.5:
+        balance_score = 15  # Medium risk: barely sufficient
+    else:
+        balance_score = 0   # Low risk: adequate funds
+    
+    risk_score += balance_score
+    factors["balance_status"] = balance_score
+    
+    # Factor 3: Past Bounce History (20% weight)
+    past_bounces = get_bounce_count(loan.loan_id)
+    bounce_score = min(past_bounces * 15, 60)  # Cap at 60
+    
+    risk_score += bounce_score
+    factors["bounce_history"] = bounce_score
+    
+    # Interpretation:
+    # - Each past bounce adds 15 points
+    # - Maximum 60 points (4+ bounces)
+    
+    # Factor 4: Days Until EMI Due (10% weight)
+    days_to_emi = (loan.next_payment_date - datetime.now()).days
+    
+    if days_to_emi <= 3:
+        emi_proximity_score = 10  # Very urgent
+    elif days_to_emi <= 7:
+        emi_proximity_score = 5   # Moderately urgent
+    else:
+        emi_proximity_score = 0   # Not urgent
+    
+    risk_score += emi_proximity_score
+    factors["days_to_emi"] = emi_proximity_score
+    
+    # Risk Classification
+    if risk_score >= 55:
+        risk_category = "High"      # Immediate intervention needed
+    elif risk_score >= 30:
+        risk_category = "Medium"    # Monitoring required
+    else:
+        risk_category = "Low"       # Normal operations
+    
+    return {
+        "risk_score": risk_score,
+        "risk_category": risk_category,
+        "factors": factors,
+        "recommendations": generate_recommendations(risk_category)
+    }
+
+B) ML Model Interpretability:
+------------------------------
+
+Why Rule-Based Instead of Neural Network?
+
+Advantages of Rule-Based Model:
+✓ Interpretability: Each factor's contribution is clear
+✓ Explainability: Can explain to customers why they're flagged
+✓ Regulatory Compliance: RBI requires explainable AI in lending
+✓ Domain Knowledge: Encodes banking expertise directly
+✓ No Training Data: Works immediately without historical data
+✓ Auditable: Easy to verify and adjust rules
+
+Trade-offs:
+✗ Less accurate than deep learning (potential)
+✗ Manual tuning of weights required
+✗ Doesn't learn patterns automatically
+
+For banking compliance, interpretability > accuracy by a small margin.
+
+C) Proactive Intervention Logic:
+---------------------------------
+
+def generate_recommendations(risk_category: str) -> List[str]:
+    """
+    AI-Driven Action Recommendations
+    """
+    if risk_category == "High":
+        return [
+            "Send immediate SMS reminder",
+            "Offer one-time grace period (3 days)",
+            "Suggest enabling auto-debit",
+            "Schedule officer callback",
+            "Provide UPI payment link"
+        ]
+    elif risk_category == "Medium":
+        return [
+            "Send reminder 2 days before due date",
+            "Recommend auto-pay enrollment",
+            "Monitor account balance daily"
+        ]
+    else:
+        return [
+            "Standard reminder 1 day before",
+            "No intervention needed"
+        ]
+
+D) Bounce Prevention API:
+--------------------------
+
+FILE: backend/routers/bounce_prevention.py
+
+@router.get("/loans/{loan_id}/bounce-risk")
+def get_bounce_risk(loan_id: str):
+    """
+    Returns AI-calculated bounce risk for a loan
+    """
+    loan = get_loan_by_id(loan_id)
+    risk_data = calculate_bounce_risk(loan)
+    
+    # Store in database for tracking
+    save_bounce_risk_profile(loan_id, risk_data)
+    
+    return risk_data
+
+@router.get("/loans/at-risk")
+def get_at_risk_loans(risk_category: str = "High"):
+    """
+    Returns all loans above a risk threshold
+    
+    Used for:
+    - Bulk outreach campaigns
+    - Officer dashboard alerts
+    - Proactive intervention workflows
+    """
+    risky_loans = db.query(BounceRiskProfile).filter(
+        BounceRiskProfile.risk_category == risk_category
+    ).all()
+    
+    return risky_loans
+
+================================================================================
+7. SENTIMENT ANALYSIS & NLP
+================================================================================
+
+FILE: backend/agents/sentiment_agent.py
+----------------------------------------
+
+AI CONCEPT: Natural Language Processing (NLP) - Emotion Detection
+------------------------------------------------------------------
+
+Analyzes customer text to detect emotional state, which influences how the
+LLM responds (empathetic vs. matter-of-fact).
+
+A) Sentiment Analysis Implementation:
+--------------------------------------
+
+def sentiment_agent(state: dict) -> dict:
+    """
+    AI Agent: Sentiment & Emotion Analysis
+    
+    Techniques:
+    1. Keyword-based sentiment (rule-based)
+    2. TextBlob polarity analysis (ML-based)
+    3. Distress signal detection
+    """
+    
+    question = state["question"].lower()
+    
+    # Method 1: Distress Signal Detection
+    distress_signals = [
+        "can't afford", "lost job", "medical emergency", "financial crisis",
+        "can't pay", "struggling", "difficulty", "hardship", "unemployed",
+        "hospitalized", "family emergency"
+    ]
+    
+    is_distressed = any(signal in question for signal in distress_signals)
+    
+    # Method 2: Negative Sentiment Keywords
+    negative_keywords = [
+        "why calling", "stop harassing", "complain", "angry", "frustrated",
+        "annoyed", "fed up", "lawsuit", "consumer court"
+    ]
+    
+    is_negative = any(keyword in question for keyword in negative_keywords)
+    
+    # Method 3: Positive/Neutral Keywords
+    positive_keywords = [
+        "thank", "appreciate", "help", "understand", "when is", "how do i",
+        "what is", "can you", "please"
+    ]
+    
+    is_positive = any(keyword in question for keyword in positive_keywords)
+    
+    # Method 4: TextBlob Sentiment Analysis (ML-based)
+    from textblob import TextBlob
+    blob = TextBlob(question)
+    polarity = blob.sentiment.polarity  # -1.0 to 1.0
+    
+    # Combine all signals
+    if is_distressed:
+        sentiment = "distressed"
+        tone = "highly_empathetic"
+    elif is_negative or polarity < -0.2:
+        sentiment = "negative"
+        tone = "empathetic"
+    elif is_positive or polarity > 0.2:
+        sentiment = "positive"
+        tone = "friendly"
+    else:
+        sentiment = "neutral"
+        tone = "professional"
+    
+    state["sentiment"] = sentiment
+    state["recommended_tone"] = tone
+    
+    return state
+
+B) Tone Adaptation in LLM:
+---------------------------
+
+The sentiment analysis influences the LLM's system prompt:
+
+if state["sentiment"] == "distressed":
+    system_prompt += """
+    IMPORTANT: The customer is experiencing financial distress.
+    - Express genuine empathy and understanding
+    - Offer immediate solutions (grace period, restructuring)
+    - Avoid mentioning penalties or legal action
+    - Provide reassurance and support
+    - Use phrases like "I understand", "We're here to help"
+    """
+
+elif state["sentiment"] == "negative":
+    system_prompt += """
+    IMPORTANT: The customer is frustrated or angry.
+    - Acknowledge their frustration
+    - Apologize for any inconvenience
+    - Provide clear, actionable solutions
+    - Offer alternative communication channels
+    - Avoid defensive language
+    """
+
+This creates emotionally intelligent responses.
+
+C) Sentiment Tracking Over Time:
+---------------------------------
+
+FILE: backend/db/models.py
+
+class InteractionHistory(Base):
+    """
+    Stores all customer interactions with sentiment scores
+    """
+    __tablename__ = "interaction_history"
+    
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"))
+    question = Column(Text)
+    answer = Column(Text)
+    sentiment = Column(String(50))  # distressed, negative, neutral, positive
+    timestamp = Column(DateTime)
+    channel = Column(String(20))  # chat, video, voice, sms
+
+# Analytics Query: Track sentiment trends
+sentiment_trend = db.query(
+    InteractionHistory.timestamp,
+    InteractionHistory.sentiment
+).filter(
+    InteractionHistory.customer_id == customer_id
+).order_by(InteractionHistory.timestamp).all()
+
+# If sentiment is consistently negative → escalate to human officer
+
+================================================================================
+8. VECTOR DATABASE & SEMANTIC SEARCH
+================================================================================
+
+FILE: backend/vector/chroma_store.py
+-------------------------------------
+
+AI CONCEPT: Vector Embeddings & Semantic Similarity
+----------------------------------------------------
+
+Stores customer interactions as vector embeddings in ChromaDB for semantic
+search. This enables the AI to find similar past conversations even when
+keywords don't match.
+
+A) How Vector Embeddings Work:
+-------------------------------
+
+Traditional Keyword Search:
+Question: "Can I get more time to pay?"
+Would NOT match: "Need extension on payment deadline"
+(Different words, same meaning)
+
+Vector Semantic Search:
+Question: "Can I get more time to pay?" → [0.2, -0.5, 0.8, ..., 0.3] (512 dimensions)
+Similar:   "Need extension on payment"  → [0.3, -0.4, 0.7, ..., 0.4]
+                                           ↑ Cosine similarity: 0.92 (very similar)
+
+Embeddings capture semantic meaning, not just keywords.
+
+B) ChromaDB Implementation:
+----------------------------
+
+import chromadb
+from chromadb.config import Settings
+
+class VectorStore:
+    """
+    Manages vector embeddings for semantic search
+    """
+    
+    def __init__(self):
+        # Initialize ChromaDB client
+        self.client = chromadb.Client(Settings(
+            chroma_db_impl="duckdb+parquet",
+            persist_directory="./chroma_db"
+        ))
+        
+        # Create collection (like a table)
+        self.collection = self.client.get_or_create_collection(
+            name="customer_interactions",
+            metadata={"hnsw:space": "cosine"}  # Cosine similarity
+        )
+    
+    def add_interaction(self, customer_id: int, question: str, answer: str):
+        """
+        Stores interaction as vector embedding
+        
+        Embedding Model: OpenAI text-embedding-ada-002
+        Dimensions: 1536
+        """
+        import openai
+        
+        # Generate embedding from question
+        embedding = openai.Embedding.create(
+            input=question,
+            model="text-embedding-ada-002"
+        )["data"][0]["embedding"]
+        
+        # Store in ChromaDB
+        self.collection.add(
+            embeddings=[embedding],
+            documents=[f"Q: {question}\nA: {answer}"],
+            metadatas=[{
+                "customer_id": customer_id,
+                "timestamp": datetime.now().isoformat()
+            }],
+            ids=[f"{customer_id}_{uuid.uuid4()}"]
+        )
+    
+    def search_similar(self, question: str, customer_id: int, top_k: int = 3):
+        """
+        Finds similar past interactions using semantic search
+        """
+        # Generate embedding for query
+        query_embedding = openai.Embedding.create(
+            input=question,
+            model="text-embedding-ada-002"
+        )["data"][0]["embedding"]
+        
+        # Search ChromaDB
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            where={"customer_id": customer_id},  # Filter by customer
+            n_results=top_k
+        )
+        
+        return results["documents"][0]  # Returns top 3 similar interactions
+
+C) Usage in Context Agent:
+---------------------------
+
+def context_agent(state: dict) -> dict:
+    """
+    Retrieves relevant past interactions using vector search
+    """
+    question = state["question"]
+    customer_id = state["customer_id"]
+    
+    # Semantic search for similar past questions
+    vector_store = VectorStore()
+    similar_interactions = vector_store.search_similar(question, customer_id)
+    
+    # Add to state for LLM context
+    state["context"]["past_similar_queries"] = similar_interactions
+    
+    return state
+
+# LLM now has access to how similar questions were answered before!
+
+D) Why Vector Search Matters:
+------------------------------
+
+Example: Customer asks "Lost my job, need help with payment"
+
+Vector search finds:
+1. "Medical emergency, can't pay this month" (similarity: 0.88)
+   → Answer: "Offered 30-day grace period, no penalty"
+   
+2. "Unemployed, looking for options" (similarity: 0.85)
+   → Answer: "Restructured loan to reduce EMI by 40%"
+
+The LLM learns from these similar cases to provide consistent, helpful answers.
+
+================================================================================
+9. CONTEXT MEMORY & PERSONALIZATION
+================================================================================
+
+FILE: backend/agents/context_memory_agent.py
+---------------------------------------------
+
+AI CONCEPT: Contextual Memory & Personalization
+------------------------------------------------
+
+Maintains conversation history and customer context across multiple interactions,
+enabling personalized, coherent conversations.
+
+A) Multi-Turn Conversation Memory:
+-----------------------------------
+
+class ConversationMemory:
+    """
+    Stores conversation history for multi-turn dialogue
+    """
+    
+    def __init__(self):
+        self.memory = {}  # {customer_id: [messages]}
+    
+    def add_message(self, customer_id: int, role: str, content: str):
+        """
+        Adds message to conversation history
+        
+        Role: 'user' or 'assistant'
+        """
+        if customer_id not in self.memory:
+            self.memory[customer_id] = []
+        
+        self.memory[customer_id].append({
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now()
+        })
+        
+        # Keep only last 10 messages (context window limit)
+        if len(self.memory[customer_id]) > 10:
+            self.memory[customer_id] = self.memory[customer_id][-10:]
+    
+    def get_history(self, customer_id: int) -> List[dict]:
+        """
+        Returns conversation history for context
+        """
+        return self.memory.get(customer_id, [])
+
+B) Contextual LLM Calls:
+-------------------------
+
+def llm_with_memory(question: str, customer_id: int) -> str:
+    """
+    LLM call with conversation history
+    """
+    memory = ConversationMemory()
+    history = memory.get_history(customer_id)
+    
+    # Build messages with history
+    messages = [
+        {"role": "system", "content": "You are a banking assistant."}
+    ]
+    
+    # Add conversation history
+    for msg in history:
+        messages.append({
+            "role": msg["role"],
+            "content": msg["content"]
+        })
+    
+    # Add current question
+    messages.append({
+        "role": "user",
+        "content": question
+    })
+    
+    # LLM now has full context
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=messages
+    )
+    
+    answer = response.choices[0].message.content
+    
+    # Save to memory
+    memory.add_message(customer_id, "user", question)
+    memory.add_message(customer_id, "assistant", answer)
+    
+    return answer
+
+C) Personalization Data:
+-------------------------
+
+class CustomerProfile:
+    """
+    Comprehensive customer profile for personalization
+    """
+    
+    def __init__(self, customer_id: int):
+        self.customer_id = customer_id
+        self.profile = self._load_profile()
+    
+    def _load_profile(self) -> dict:
+        """
+        Aggregates data from multiple sources
+        """
+        customer = db.query(Customer).filter_by(id=self.customer_id).first()
+        loans = db.query(Loan).filter_by(customer_id=self.customer_id).all()
+        interactions = db.query(InteractionHistory).filter_by(
+            customer_id=self.customer_id
+        ).order_by(InteractionHistory.timestamp.desc()).limit(20).all()
+        
+        return {
+            "name": customer.name,
+            "phone": customer.phone,
+            "email": customer.email,
+            "preferred_language": customer.preferred_language,
+            "communication_preference": customer.communication_preference,
+            
+            # Loan details
+            "total_loans": len(loans),
+            "total_outstanding": sum(l.outstanding_amount for l in loans),
+            "payment_history": self._calculate_payment_score(loans),
+            
+            # Interaction patterns
+            "last_interaction": interactions[0].timestamp if interactions else None,
+            "common_questions": self._extract_common_questions(interactions),
+            "sentiment_trend": self._calculate_sentiment_trend(interactions),
+            
+            # Behavioral insights
+            "preferred_channel": self._get_preferred_channel(interactions),
+            "response_rate": self._calculate_response_rate(interactions),
+            "best_contact_time": self._find_best_contact_time(interactions)
+        }
+    
+    def get_personalized_greeting(self) -> str:
+        """
+        Generates personalized greeting based on profile
+        """
+        name = self.profile["name"]
+        time_of_day = datetime.now().hour
+        
+        if time_of_day < 12:
+            greeting = f"Good morning, {name}!"
+        elif time_of_day < 17:
+            greeting = f"Good afternoon, {name}!"
+        else:
+            greeting = f"Good evening, {name}!"
+        
+        # Add context-aware message
+        if self.profile["sentiment_trend"] == "negative":
+            greeting += " I understand you've been facing some challenges. I'm here to help find solutions."
+        elif self.profile["payment_history"] == "excellent":
+            greeting += " Thank you for being a valued customer with excellent payment history."
+        
+        return greeting
+
+================================================================================
+10. POLICY GUARDRAILS & RESPONSIBLE AI
+================================================================================
+
+FILE: backend/agents/policy_guardrail_agent.py
+-----------------------------------------------
+
+AI CONCEPT: AI Safety & Regulatory Compliance
+----------------------------------------------
+
+Ensures all AI-generated responses comply with banking regulations, fair lending
+practices, and company policies. Acts as a "safety layer" over the LLM.
+
+A) Guardrail Rules:
+--------------------
+
+def policy_guardrail_agent(state: dict) -> dict:
+    """
+    AI Agent: Policy Compliance & Safety Checks
+    
+    Checks:
+    1. No threatening language
+    2. No legal threats (unless authorized)
+    3. RBI compliance (fair lending practices)
+    4. Truthfulness (no false promises)
+    5. Privacy protection (no PII leakage)
+    """
+    
+    answer = state["answer"]
+    
+    # Rule 1: Detect threatening language
+    threatening_words = [
+        "legal action", "lawsuit", "court", "police", "credit score damage",
+        "blacklist", "consequences", "seize", "repossess"
+    ]
+    
+    has_threat = any(word in answer.lower() for word in threatening_words)
+    
+    if has_threat and not state.get("authorized_legal_action"):
+        # Remove threatening language
+        answer = remove_threats(answer)
+        state["guardrail_triggered"] = "threat_detected"
+    
+    # Rule 2: RBI Fair Practices Code Compliance
+    unfair_practices = [
+        "must pay immediately", "no options available", "pay or else",
+        "we will report you", "your reputation will be ruined"
+    ]
+    
+    is_unfair = any(phrase in answer.lower() for phrase in unfair_practices)
+    
+    if is_unfair:
+        # Rewrite with fair language
+        answer = rewrite_fair(answer)
+        state["guardrail_triggered"] = "unfair_practice_detected"
+    
+    # Rule 3: Truthfulness Check
+    false_promises = [
+        "definitely", "guaranteed", "100% approved", "no questions asked",
+        "instant approval", "zero penalty"
+    ]
+    
+    has_false_promise = any(phrase in answer.lower() for phrase in false_promises)
+    
+    if has_false_promise:
+        # Add disclaimer
+        answer += "\n\n(Note: Subject to credit approval and terms & conditions.)"
+        state["guardrail_triggered"] = "false_promise_detected"
+    
+    # Rule 4: Privacy Protection
+    # Check if answer contains PII
+    import re
+    
+    # Detect phone numbers
+    phone_pattern = r'\d{10}'
+    if re.search(phone_pattern, answer):
+        # Mask phone number
+        answer = re.sub(phone_pattern, "XXXX-XXXX-XX", answer)
+        state["guardrail_triggered"] = "pii_detected"
+    
+    # Detect Aadhaar numbers
+    aadhaar_pattern = r'\d{4}\s\d{4}\s\d{4}'
+    if re.search(aadhaar_pattern, answer):
+        answer = re.sub(aadhaar_pattern, "XXXX-XXXX-XXXX", answer)
+        state["guardrail_triggered"] = "pii_detected"
+    
+    # Rule 5: Maximum Grace Period Limit
+    if "grace period" in answer.lower():
+        # Extract number of days mentioned
+        days = extract_number(answer)
+        if days and days > 60:
+            # Cap at company policy limit
+            answer = answer.replace(str(days), "60")
+            state["guardrail_triggered"] = "policy_limit_exceeded"
+    
+    # Rule 6: Sentiment-Appropriate Language
+    if state["sentiment"] == "distressed":
+        # Ensure empathetic language is used
+        empathy_check = [
+            "understand", "help", "support", "options", "together"
+        ]
+        
+        has_empathy = any(word in answer.lower() for word in empathy_check)
+        
+        if not has_empathy:
+            # Add empathetic opening
+            answer = "I understand this is a difficult time. " + answer
+            state["guardrail_triggered"] = "empathy_added"
+    
+    state["answer"] = answer
+    return state
+
+def remove_threats(text: str) -> str:
+    """
+    Removes threatening language and replaces with neutral alternatives
+    """
+    replacements = {
+        "legal action": "further steps as per policy",
+        "lawsuit": "formal resolution process",
+        "court": "dispute resolution",
+        "police": "appropriate authorities",
+        "credit score damage": "impact on credit profile",
+        "blacklist": "impact future loan eligibility",
+        "consequences": "implications",
+        "seize": "recover",
+        "repossess": "reclaim"
+    }
+    
+    for threat, neutral in replacements.items():
+        text = text.replace(threat, neutral)
+    
+    return text
+
+def rewrite_fair(text: str) -> str:
+    """
+    Rewrites unfair language to comply with RBI guidelines
+    """
+    # Use LLM to rewrite (meta-prompting)
+    rewrite_prompt = f"""
+    Rewrite this banking response to comply with RBI Fair Practices Code:
+    
+    Original: {text}
+    
+    Requirements:
+    - Remove any coercive or threatening language
+    - Offer at least one alternative solution
+    - Use empathetic, respectful tone
+    - Mention customer rights if applicable
+    
+    Rewritten version:
+    """
+    
+    rewritten = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": rewrite_prompt}]
+    ).choices[0].message.content
+    
+    return rewritten
+
+B) Audit Trail:
+----------------
+
+Every guardrail trigger is logged for compliance audits:
+
+class GuardrailLog(Base):
+    """
+    Tracks all AI safety interventions
+    """
+    __tablename__ = "guardrail_logs"
+    
+    id = Column(Integer, primary_key=True)
+    interaction_id = Column(Integer, ForeignKey("interaction_history.id"))
+    trigger_type = Column(String(100))  # threat_detected, unfair_practice, etc.
+    original_text = Column(Text)
+    modified_text = Column(Text)
+    timestamp = Column(DateTime)
+    
+    # For regulatory reporting
+    reviewed_by_human = Column(Boolean, default=False)
+    escalated = Column(Boolean, default=False)
+
+# Compliance team can review all guardrail triggers
+risky_interactions = db.query(GuardrailLog).filter(
+    GuardrailLog.trigger_type.in_([
+        "threat_detected",
+        "unfair_practice_detected"
+    ])
+).all()
+
+================================================================================
+11. FRONTEND AI COMPONENTS
+================================================================================
+
+FILE: frontend/src/components/VideoCallAgent.jsx
+-------------------------------------------------
+
+A) Video AI Agent Modal:
+-------------------------
+
+export default function VideoCallAgent({ loanId, onClose }) {
+    """
+    React Component: AI-Powered Video Chatbot
+    
+    Features:
+    - Voice input (speech-to-text)
+    - Text input (manual typing)
+    - D-ID video responses (AI avatar)
+    - Browser TTS fallback
+    - Multi-language support
+    - Conversation history
+    """
+    
+    const [question, setQuestion] = useState('');
+    const [conversation, setConversation] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [language, setLanguage] = useState('en');
+    const [currentVideo, setCurrentVideo] = useState(null);
+    const [isRecording, setIsRecording] = useState(false);
+    const [mediaRecorder, setMediaRecorder] = useState(null);
+    
+    // Voice Recording
+    const startRecording = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream);
+        
+        const chunks = [];
+        recorder.ondataavailable = (e) => chunks.push(e.data);
+        
+        recorder.onstop = async () => {
+            const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+            const formData = new FormData();
+            formData.append('audio', audioBlob);
+            
+            // Send to backend for transcription
+            const response = await api.post(
+                '/customer/video-agent/transcribe-audio',
+                formData
+            );
+            
+            setQuestion(response.data.text);
+            setLanguage(response.data.language);
+        };
+        
+        recorder.start();
+        setMediaRecorder(recorder);
+        setIsRecording(true);
+    };
+    
+    // Ask Question
+    const handleAsk = async () => {
+        setLoading(true);
+        
+        try {
+            // Call backend API
+            const response = await api.post('/customer/video-agent/ask', {
+                loan_id: loanId,
+                question: question,
+                language: language
+            });
+            
+            const { answer, video_url } = response.data;
+            
+            // Add to conversation history
+            setConversation([
+                ...conversation,
+                { type: 'user', text: question },
+                { type: 'agent', text: answer, video: video_url }
+            ]);
+            
+            // Play video if available
+            if (video_url) {
+                setCurrentVideo(video_url);
+                videoRef.current.src = video_url;
+                videoRef.current.play();
+            } else {
+                // Fallback: Browser TTS
+                speakText(answer, language);
+            }
+            
+        } catch (error) {
+            console.error('Error:', error);
+        } finally {
+            setLoading(false);
+            setQuestion('');
+        }
+    };
+    
+    // Browser TTS Fallback
+    const speakText = (text, lang) => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = lang === 'hi' ? 'hi-IN' : 'en-US';
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        
+        speechSynthesis.speak(utterance);
+        setIsPlaying(true);
+        
+        utterance.onend = () => setIsPlaying(false);
+    };
+    
+    return (
+        <div className="modal">
+            {/* Avatar Section */}
+            <div className="avatar-section">
+                {!currentVideo ? (
+                    /* Default Avatar */
+                    <div className="avatar-placeholder">
+                        <img src="https://unsplash.com/..." alt="AI Assistant" />
+                        <p>Banking Assistant</p>
+                    </div>
+                ) : (
+                    /* D-ID Video */
+                    <video ref={videoRef} autoPlay playsInline />
+                )}
+            </div>
+            
+            {/* Chat Section */}
+            <div className="chat-section">
+                {conversation.map((msg, idx) => (
+                    <div key={idx} className={msg.type}>
+                        {msg.text}
+                    </div>
+                ))}
+            </div>
+            
+            {/* Input Section */}
+            <div className="input-section">
+                <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                    <option value="en">English</option>
+                    <option value="hi">हिन्दी</option>
+                    <option value="ta">தமிழ்</option>
+                </select>
+                
+                <input
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    placeholder="Ask a question..."
+                />
+                
+                <button onClick={isRecording ? stopRecording : startRecording}>
+                    {isRecording ? '⏹' : '🎤'}
+                </button>
+                
+                <button onClick={handleAsk} disabled={loading}>
+                    {loading ? 'Processing...' : 'Send'}
+                </button>
+            </div>
+        </div>
+    );
+}
+
+B) AI Features in Customer Dashboard:
+--------------------------------------
+
+FILE: frontend/src/pages/customer/CustomerLoans.jsx
+
+// Bounce Risk Badge (AI-predicted)
+{loan.bounce_risk && (
+    <span className={`badge ${loan.bounce_risk.risk_category.toLowerCase()}`}>
+        ⚠️ {loan.bounce_risk.risk_category} Bounce Risk
+    </span>
+)}
+
+// Auto-Pay Recommendation (AI-driven)
+{loan.bounce_risk?.risk_category === 'High' && (
+    <button onClick={() => openAutoPayModal(loan)}>
+        Enable Auto-Pay (Recommended by AI)
+    </button>
+)}
+
+// Quick Questions (AI-suggested based on loan status)
+const getQuickQuestions = (loan) => {
+    if (loan.days_past_due > 0) {
+        return [
+            "Can I get a grace period?",
+            "How do I enable Auto-Pay?",
+            "What happens if I miss a payment?"
+        ];
+    } else {
+        return [
+            "What is my next EMI due date?",
+            "How much do I owe?",
+            "Can I prepay my loan?"
+        ];
+    }
+};
+
+================================================================================
+12. API ARCHITECTURE & DATA FLOW
+================================================================================
+
+COMPLETE REQUEST FLOW:
+----------------------
+
+1. User asks question via Video AI Agent
+   ↓
+2. Frontend: VideoCallAgent.jsx
+   - Captures audio (voice) or text
+   - Sends to backend API
+   ↓
+3. Backend: /customer/video-agent/ask
+   - Authenticates user (JWT token)
+   - Retrieves loan context from database
+   ↓
+4. LangGraph Orchestration (workflow.py)
+   - Context Agent: Loads customer history + vector search
+   - Intelligence Agent: Analyzes loan patterns
+   - Sentiment Agent: Detects customer emotion
+   - LLM Agent: Generates intelligent response (GPT-4)
+   - Guardrail Agent: Ensures compliance
+   ↓
+5. Video Generation (video_agent.py)
+   - Sends text to D-ID API
+   - D-ID generates lip-synced video
+   - Returns video URL
+   ↓
+6. Response sent back to frontend
+   - Video URL (if D-ID available)
+   - Text answer (always)
+   - Timestamp, sentiment, metadata
+   ↓
+7. Frontend displays response
+   - Plays D-ID video OR
+   - Uses browser TTS fallback
+   - Shows answer in chat history
+   ↓
+8. Interaction stored in database
+   - InteractionHistory table
+   - Vector embedding in ChromaDB
+   - Sentiment tracking
+
+API ENDPOINTS:
+--------------
+
+# Video AI Agent
+POST /customer/video-agent/ask
+POST /customer/video-agent/transcribe-audio
+GET  /customer/video-agent/loan-summary/{loan_id}
+
+# Bounce Prevention
+GET  /officer/loans/{loan_id}/bounce-risk
+GET  /officer/bounce-prevention/dashboard-stats
+GET  /officer/loans/at-risk
+POST /officer/bounce-prevention/enroll-autopay
+
+# Customer Portal
+GET  /customer/loans
+GET  /customer/loans/{loan_id}
+POST /customer/grace-period/request
+
+# Officer Portal
+GET  /officer/customers/search
+GET  /officer/dashboard/stats
+POST /officer/outreach/bulk-campaign
+
+# Authentication
+POST /auth/login
+POST /auth/refresh
+
+================================================================================
+13. DATABASE SCHEMA & AI DATA STORAGE
+================================================================================
+
+FILE: backend/db/models.py
+--------------------------
+
+A) Core Tables:
+---------------
+
+class Customer(Base):
+    """Customer master data"""
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200))
+    phone = Column(String(15), unique=True)
+    email = Column(String(100))
+    aadhaar = Column(String(12))
+    pan = Column(String(10))
+    preferred_language = Column(String(10), default='en')
+    communication_preference = Column(String(20))  # sms, email, whatsapp
+
+class Loan(Base):
+    """Loan account data"""
+    loan_id = Column(String(20), primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"))
+    loan_type = Column(String(50))
+    sanctioned_amount = Column(Numeric(12, 2))
+    outstanding_amount = Column(Numeric(12, 2))
+    emi_amount = Column(Numeric(10, 2))
+    next_payment_date = Column(Date)
+    days_past_due = Column(Integer)
+    payments_made = Column(Integer)
+    total_payments = Column(Integer)
+
+B) AI-Related Tables:
+----------------------
+
+class BounceRiskProfile(Base):
+    """AI-calculated bounce risk predictions"""
+    id = Column(Integer, primary_key=True)
+    loan_id = Column(String(20), ForeignKey("loans.loan_id"))
+    risk_score = Column(Integer)  # 0-100
+    risk_category = Column(String(20))  # High, Medium, Low
+    
+    # Risk factors (for explainability)
+    payment_history_score = Column(Integer)
+    balance_status_score = Column(Integer)
+    bounce_history_score = Column(Integer)
+    emi_proximity_score = Column(Integer)
+    
+    calculated_at = Column(DateTime, default=datetime.now)
+    valid_until = Column(DateTime)  # Risk scores expire
+
+class InteractionHistory(Base):
+    """All AI agent interactions"""
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"))
+    loan_id = Column(String(20), ForeignKey("loans.loan_id"))
+    question = Column(Text)
+    answer = Column(Text)
+    
+    # AI metadata
+    sentiment = Column(String(50))  # distressed, negative, neutral, positive
+    language = Column(String(10))
+    channel = Column(String(20))  # chat, video, voice
+    video_url = Column(String(500))
+    
+    # Performance tracking
+    response_time_ms = Column(Integer)
+    llm_model = Column(String(50))  # gpt-4, gpt-3.5-turbo
+    
+    timestamp = Column(DateTime, default=datetime.now)
+
+class AutoPayMandate(Base):
+    """Auto-debit enrollment (bounce prevention)"""
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"))
+    loan_id = Column(String(20), ForeignKey("loans.loan_id"))
+    
+    bank_name = Column(String(100))
+    account_number = Column(String(20), encrypted=True)
+    ifsc_code = Column(String(11))
+    account_type = Column(String(20))
+    
+    mandate_status = Column(String(20))  # pending, active, cancelled
+    auto_debit_day = Column(Integer)  # 1-28
+    
+    enrolled_at = Column(DateTime)
+    activated_at = Column(DateTime)
+
+class BouncePreventionAction(Base):
+    """Track AI-recommended actions"""
+    id = Column(Integer, primary_key=True)
+    loan_id = Column(String(20), ForeignKey("loans.loan_id"))
+    
+    action_type = Column(String(50))  # sms_reminder, grace_offer, autopay_nudge
+    recommended_by = Column(String(20))  # ai_agent, officer
+    
+    triggered_at = Column(DateTime)
+    executed_at = Column(DateTime)
+    
+    outcome = Column(String(20))  # success, failed, pending
+    channel = Column(String(20))  # sms, email, whatsapp, call
+
+class GuardrailLog(Base):
+    """AI safety & compliance audit trail"""
+    id = Column(Integer, primary_key=True)
+    interaction_id = Column(Integer, ForeignKey("interaction_history.id"))
+    
+    trigger_type = Column(String(100))
+    original_text = Column(Text)
+    modified_text = Column(Text)
+    
+    reviewed_by_human = Column(Boolean, default=False)
+    escalated = Column(Boolean, default=False)
+    
+    timestamp = Column(DateTime)
+
+C) Vector Database (ChromaDB):
+-------------------------------
+
+Stored separately in chroma_db/ directory
+
+Structure:
+- Collection: "customer_interactions"
+- Embeddings: 1536-dimensional vectors (OpenAI ada-002)
+- Metadata: customer_id, timestamp, sentiment
+- Documents: Question + Answer pairs
+
+Query pattern:
+query_embedding = openai.Embedding.create(input=question)
+results = collection.query(
+    query_embeddings=[query_embedding],
+    where={"customer_id": customer_id},
+    n_results=5
+)
+
+================================================================================
+14. DEPLOYMENT & CONFIGURATION
+================================================================================
+
+FILE: .env (Environment Variables)
+-----------------------------------
+
+# Database
+DATABASE_URL=sqlite:///./smart_collections.db
+
+# OpenAI (LLM)
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4
+
+# D-ID (Video Generation)
+DID_API_KEY=...
+
+# Sarvam AI (Speech-to-Text)
+SARVAM_API_KEY=...
+
+# Azure TTS (Text-to-Speech)
+AZURE_SPEECH_KEY=...
+AZURE_SPEECH_REGION=eastus
+
+# JWT Authentication
+SECRET_KEY=...
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# ChromaDB
+CHROMA_PERSIST_DIRECTORY=./chroma_db
+
+# Feature Flags
+ENABLE_VIDEO_AGENT=true
+ENABLE_VOICE_INPUT=true
+ENABLE_BOUNCE_PREVENTION=true
+
+DEPLOYMENT STEPS:
+-----------------
+
+1. Backend (FastAPI)
+   uvicorn backend.main:app --host 0.0.0.0 --port 8000
+
+2. Frontend (React + Vite)
+   cd frontend
+   npm run build
+   npm run preview
+
+3. Database Setup
+   python -m backend.db.seed_data
+
+4. Vector Database
+   # ChromaDB persists automatically to ./chroma_db
+
+5. API Keys Configuration
+   - Get D-ID key from https://studio.d-id.com/
+   - Get Sarvam key from https://www.sarvam.ai/
+   - Get OpenAI key from https://platform.openai.com/
+   - Set in .env file
+
+PRODUCTION CONSIDERATIONS:
+--------------------------
+
+1. Scalability:
+   - Use PostgreSQL instead of SQLite
+   - Deploy ChromaDB on separate server
+   - Use Redis for conversation memory caching
+   - Load balance multiple FastAPI instances
+
+2. Security:
+   - HTTPS for all endpoints
+   - Rate limiting on API calls
+   - Input validation & sanitization
+   - Encrypted PII storage
+
+3. Monitoring:
+   - Log all LLM API calls (cost tracking)
+   - Track response times
+   - Monitor guardrail triggers
+   - Alert on high bounce risk count
+
+4. Cost Optimization:
+   - Cache frequent LLM responses
+   - Use GPT-3.5-turbo for simple queries
+   - D-ID video generation only when requested
+   - Batch vector embeddings
+
+================================================================================
+KEY GENAI CONCEPTS SUMMARY
+================================================================================
+
+1. Large Language Models (LLMs)
+   - OpenAI GPT-4 for intelligent reasoning
+   - GPT-3.5-turbo for simple queries
+   - Context-aware prompt engineering
+   - Few-shot learning with examples
+
+2. Agentic AI (LangGraph)
+   - Multi-agent orchestration
+   - Stateful workflows
+   - Agent specialization
+   - Graph-based execution
+
+3. Generative AI (D-ID)
+   - Text-to-video generation
+   - Lip-sync synthesis
+   - Facial animation
+   - Multilingual voice support
+
+4. Speech Processing
+   - Automatic Speech Recognition (Sarvam AI)
+   - Text-to-Speech (Azure TTS)
+   - Multilingual support (9 languages)
+   - Real-time transcription
+
+5. Vector Embeddings (ChromaDB)
+   - Semantic similarity search
+   - 1536-dimensional vectors
+   - Cosine similarity
+   - Contextual memory
+
+6. Natural Language Processing (NLP)
+   - Sentiment analysis
+   - Emotion detection
+   - Intent classification
+   - Tone adaptation
+
+7. Predictive Analytics
+   - Bounce risk prediction
+   - 4-factor ML model
+   - Proactive interventions
+   - Explainable AI
+
+8. Responsible AI
+   - Policy guardrails
+   - Compliance checking
+   - Safety filters
+   - Audit trails
+
+9. Personalization
+   - Customer profiling
+   - Behavioral patterns
+   - Conversation memory
+   - Adaptive responses
+
+10. Multimodal AI
+    - Text, voice, video
+    - Cross-modal understanding
+    - Unified user experience
+    - Channel optimization
+
+================================================================================
+END OF CODE EXPLANATION
+================================================================================
+
+This document covers all major AI and GenAI components in the Smart Collections
+Platform. The system demonstrates enterprise-grade AI implementation with:
+
+✓ 8 specialized AI agents
+✓ LLM-powered reasoning (GPT-4)
+✓ Generative video (D-ID)
+✓ Speech processing (Sarvam AI)
+✓ Vector search (ChromaDB)
+✓ Predictive analytics (Bounce prevention)
+✓ Sentiment analysis (NLP)
+✓ Responsible AI guardrails
+✓ Multilingual support (9 languages)
+✓ Production-ready architecture
+
+For questions or clarifications, refer to specific sections above.
